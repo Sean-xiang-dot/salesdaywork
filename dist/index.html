@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>销售日报与商机督导系统</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">S</div>
+          <div>
+            <strong>销售督导</strong>
+            <span>日报 · 商机 · AI评分</span>
+          </div>
+        </div>
+        <nav class="nav" aria-label="主导航">
+          <button class="nav-item active" data-view="dashboard">看板</button>
+          <button class="nav-item" data-view="daily">日报提交</button>
+          <button class="nav-item" data-view="online">线上运营</button>
+          <button class="nav-item" data-view="opportunity">商机推进</button>
+          <button class="nav-item" data-view="visit">拜访记录</button>
+          <button class="nav-item" data-view="ai">AI点评</button>
+          <button class="nav-item" data-view="crm">CRM同步</button>
+        </nav>
+        <div class="side-card">
+          <span>今日提交率</span>
+          <strong id="sidebarSubmitRate">0%</strong>
+          <small>以当天日报为准</small>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">2026年7月8日 · 华南销售二组</p>
+            <h1>销售动作采集与主管督导台</h1>
+          </div>
+          <div class="top-actions">
+            <div class="auth-widget" id="authWidget"></div>
+            <button class="ghost-button" id="seedButton" type="button">恢复示例数据</button>
+            <button class="primary-button" data-view-target="daily" type="button">提交日报</button>
+          </div>
+        </header>
+
+        <section class="view active" id="dashboardView">
+          <div class="metric-grid">
+            <article class="metric-card">
+              <span>A级商机</span>
+              <strong id="metricGradeA">0</strong>
+              <small id="metricReportsSub">重点推进池</small>
+            </article>
+            <article class="metric-card">
+              <span>线上转化线索</span>
+              <strong id="metricOnlineLeads">0</strong>
+              <small>来自线上运营日报</small>
+            </article>
+            <article class="metric-card">
+              <span>漏斗金额</span>
+              <strong id="metricFunnelAmount">0</strong>
+              <small>未关单商机池</small>
+            </article>
+            <article class="metric-card risk">
+              <span>平均拜访评分</span>
+              <strong id="metricVisitScore">0</strong>
+              <small>客户拜访记录</small>
+            </article>
+          </div>
+
+          <div class="brief-grid">
+            <section class="brief-panel">
+              <div>
+                <span>早启动</span>
+                <strong>今日先抓什么</strong>
+              </div>
+              <p id="morningBrief">等待日报和商机数据生成启动建议。</p>
+            </section>
+            <section class="brief-panel">
+              <div>
+                <span>晚复盘</span>
+                <strong>今天暴露什么</strong>
+              </div>
+              <p id="eveningBrief">等待团队动作沉淀后生成复盘摘要。</p>
+            </section>
+          </div>
+
+          <div class="dashboard-layout">
+            <section class="panel wide">
+              <div class="panel-head">
+                <div>
+                  <h2>团队PK榜</h2>
+                  <p>综合商机质量、线上线索、拜访质量和推进动作</p>
+                </div>
+              </div>
+              <div class="ranking-list" id="rankingList"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>四张业务表量化</h2>
+                  <p>商机分级、线上运营、漏斗、拜访记录</p>
+                </div>
+              </div>
+              <div class="module-list" id="moduleList"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>商机风险</h2>
+                  <p>主管优先看这里</p>
+                </div>
+              </div>
+              <div class="risk-list" id="riskList"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>工作量饱和度</h2>
+                  <p>触达、拜访、商机推进和线上线索综合评分</p>
+                </div>
+              </div>
+              <div class="diagnosis-list" id="workloadList"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>商机储备评分</h2>
+                  <p>看数量、金额、A级占比和近期跟进风险</p>
+                </div>
+              </div>
+              <div class="diagnosis-list" id="opportunityScoreList"></div>
+            </section>
+
+            <section class="panel wide">
+              <div class="panel-head">
+                <div>
+                  <h2>AI动作诊断</h2>
+                  <p>日报总结、拜访评分、商机问题和主管提醒</p>
+                </div>
+              </div>
+              <div class="coach-grid" id="coachInsightList"></div>
+            </section>
+
+            <section class="panel wide">
+              <div class="panel-head">
+                <div>
+                  <h2>主管今日检查台</h2>
+                  <p>未提交、低质量日报、商机风险和同步异常</p>
+                </div>
+              </div>
+              <div class="manager-focus-list" id="managerFocusList"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="dailyView">
+          <form class="form panel" id="dailyForm">
+            <div class="panel-head">
+              <div>
+                <h2>日报提交</h2>
+                <p>少写长文，多留下可检查的销售动作</p>
+              </div>
+              <button class="primary-button" type="submit">保存日报</button>
+            </div>
+
+            <div class="form-grid compact">
+              <label>
+                日期
+                <input name="date" type="date" required />
+              </label>
+              <label>
+                提交人
+                <select name="owner" required></select>
+              </label>
+              <label>
+                新签业绩
+                <input name="newSales" inputmode="numeric" placeholder="例如 12000" />
+              </label>
+              <label>
+                老客业绩
+                <input name="renewalSales" inputmode="numeric" placeholder="例如 8000" />
+              </label>
+            </div>
+            <div class="inline-status" id="performanceStatus">登录 CRM 后，系统会按提交人和日期自动带出新签/老客业绩。</div>
+
+            <div class="form-grid">
+              <label>
+                今日触达客户数
+                <input name="touches" inputmode="numeric" placeholder="电话、微信、到访邀约等" />
+              </label>
+              <label>
+                新增有效线索
+                <input name="posts" inputmode="numeric" />
+              </label>
+              <label>
+                自拓数量
+                <input name="selfProspects" inputmode="numeric" />
+              </label>
+              <label>
+                软件IP触达数
+                <input name="softwareTouches" inputmode="numeric" />
+              </label>
+            </div>
+
+            <div class="daily-opportunity-panel">
+              <div class="section-title">
+                <div>
+                  <h3>本周需要跟进的商机</h3>
+                  <p>按提交人自动拉取未关单商机，保存日报后同步更新商机表</p>
+                </div>
+                <span id="dailyOpportunityCount">0条</span>
+              </div>
+              <div class="table-wrap compact-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>客户</th>
+                      <th>金额</th>
+                      <th>当前阶段</th>
+                      <th>今日跟进情况</th>
+                      <th>下一步计划</th>
+                      <th>下次跟进</th>
+                      <th>是否关单</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dailyOpportunityTable"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="daily-opportunity-panel">
+              <div class="section-title">
+                <div>
+                  <h3>今日拜访记录</h3>
+                  <p>预留三行，填满后自动增加新行，保存日报后同步到拜访记录表</p>
+                </div>
+              </div>
+              <div class="table-wrap compact-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>客户名称</th>
+                      <th>方式</th>
+                      <th>拜访目的</th>
+                      <th>沟通要点</th>
+                      <th>客户痛点</th>
+                      <th>下一步计划</th>
+                      <th>截止日</th>
+                      <th>评分</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dailyVisitTable"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="split-fields">
+              <label>
+                本日额外工作
+                <textarea name="extraWork" rows="4" placeholder="录课培训、安装对接、内部沟通等"></textarea>
+              </label>
+              <label>
+                明日工作计划
+                <textarea name="tomorrowPlan" rows="4" placeholder="写 1-3 个可检查动作"></textarea>
+              </label>
+            </div>
+          </form>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>日报历史</h2>
+                <p>按日期保留提交记录，主管可回看每日变化</p>
+              </div>
+            </div>
+            <div class="history-list" id="reportHistoryList"></div>
+          </section>
+        </section>
+
+        <section class="view" id="onlineView">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>线上运营</h2>
+                <p>独立维护小红书等平台的发布、互动和线索转化数据</p>
+              </div>
+              <div class="top-actions">
+                <button class="ghost-button" id="mockOnlineSyncButton" type="button">模拟线上同步</button>
+                <button class="primary-button" id="addOnlineButton" type="button">新增运营数据</button>
+              </div>
+            </div>
+            <div class="sync-note">
+              <strong>自动获取可行性</strong>
+              <span>优先接官方/企业号/服务商接口；没有授权接口时，可用后台导出或半自动导入。公开页抓取只能拿公开互动数据，私信和线索转化通常拿不到且稳定性差。</span>
+            </div>
+            <div class="table-wrap editable-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>日期</th>
+                    <th>顾问</th>
+                    <th>平台</th>
+                    <th>发布内容数</th>
+                    <th>阅读/播放量</th>
+                    <th>点赞</th>
+                    <th>收藏</th>
+                    <th>评论</th>
+                    <th>私信</th>
+                    <th>转化线索</th>
+                    <th>数据来源</th>
+                  </tr>
+                </thead>
+                <tbody id="onlineTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="visitView">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>拜访记录</h2>
+                <p>对应业务表“客户拜访记录”，用 Excel 表格维护拜访方式、沟通要点、痛点和下一步</p>
+              </div>
+            </div>
+            <div class="table-wrap editable-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>拜访日期</th>
+                    <th>顾问</th>
+                    <th>客户名称</th>
+                    <th>拜访方式</th>
+                    <th>拜访目的</th>
+                    <th>沟通要点</th>
+                    <th>客户痛点</th>
+                    <th>下一步计划</th>
+                    <th>跟进截止日</th>
+                    <th>评分</th>
+                    <th>CRM状态</th>
+                  </tr>
+                </thead>
+                <tbody id="visitTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="opportunityView">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>商机推进</h2>
+                <p>把线下表格变成可追踪的阶段和下一步</p>
+              </div>
+              <button class="primary-button" id="addOpportunityButton" type="button">新增商机</button>
+            </div>
+            <div class="table-wrap editable-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>顾问</th>
+                    <th>客户</th>
+                    <th>来源</th>
+                    <th>需求</th>
+                    <th>等级</th>
+                    <th>评分</th>
+                    <th>金额</th>
+                    <th>阶段</th>
+                    <th>跟进情况</th>
+                    <th>下次跟进</th>
+                    <th>预计成交</th>
+                    <th>状态</th>
+                    <th>风险</th>
+                  </tr>
+                </thead>
+                <tbody id="opportunityTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="aiView">
+          <div class="ai-layout">
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>AI今日点评</h2>
+                  <p>按提交完整度、工作量、商机质量、计划清晰度打分</p>
+                </div>
+                <button class="ghost-button" id="refreshAiScoreButton" type="button">刷新AI评分</button>
+              </div>
+              <div class="ai-cards" id="aiCards"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>自动周报草稿</h2>
+                  <p>主管可直接复制调整</p>
+                </div>
+              </div>
+              <div class="weekly-summary" id="weeklySummary"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>主管点评</h2>
+                  <p>主管对日报、商机和明日计划的复盘意见</p>
+                </div>
+              </div>
+              <form class="review-form" id="reviewForm">
+                <div class="form-grid compact">
+                  <label>日期<input name="date" type="date" /></label>
+                  <label>顾问<select name="owner"></select></label>
+                </div>
+                <textarea name="comment" rows="4" placeholder="写主管点评、需要支持的事项、明日检查重点"></textarea>
+                <button class="primary-button" type="submit">保存点评</button>
+              </form>
+              <div class="review-list" id="reviewList"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="crmView">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>CRM同步队列</h2>
+                <p>先同步关键结果，过程数据留在督导系统内</p>
+              </div>
+              <button class="ghost-button" id="mockSyncButton" type="button">模拟同步</button>
+              <button class="primary-button" id="syncVisitsButton" type="button">同步拜访到CRM</button>
+            </div>
+            <div class="sync-grid" id="syncGrid"></div>
+            <div class="retry-list" id="syncRetryList"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>真实系统落地差距</h2>
+                <p>从演示样机走向团队正式使用，需要补齐这些能力</p>
+              </div>
+            </div>
+            <div class="readiness-grid" id="readinessGrid"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>数据迁移与备份</h2>
+                <p>当前版本仍是浏览器本地保存；可先导出备份，后续接数据库时直接迁移</p>
+              </div>
+              <div class="top-actions">
+                <button class="ghost-button" id="refreshSharedDataButton" type="button">刷新云端数据</button>
+                <button class="ghost-button" id="syncAccountsButton" type="button">同步CRM客户</button>
+                <button class="ghost-button" id="importDataButton" type="button">导入数据</button>
+                <button class="primary-button" id="exportDataButton" type="button">导出演示数据</button>
+              </div>
+            </div>
+            <input id="importDataFile" type="file" accept="application/json" hidden />
+            <div class="storage-status" id="storageStatus"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>同步日志</h2>
+                <p>记录日报保存、AI评分、CRM同步、客户缓存等关键动作</p>
+              </div>
+            </div>
+            <div class="sync-log" id="syncLog"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="opportunityDialog">
+      <form method="dialog" class="dialog-form" id="opportunityForm">
+        <div class="panel-head">
+          <div>
+            <h2>新增商机</h2>
+            <p>可先建临时商机，后续再匹配 CRM 客户</p>
+          </div>
+          <button class="icon-button" value="cancel" type="submit">×</button>
+        </div>
+        <label>顾问<select name="owner" required></select></label>
+        <label>客户名称<input name="customer" required /></label>
+        <label>来源<input name="source" placeholder="个人自拓、售后、转介绍" /></label>
+        <label>需求<input name="need" placeholder="硬件、软件、全科、英语等" /></label>
+        <label>预计金额<input name="amount" inputmode="numeric" /></label>
+        <label>阶段<select name="stage">
+          <option>初步沟通</option>
+          <option>方案确认</option>
+          <option>参访体验</option>
+          <option>合同推进</option>
+          <option>付款中</option>
+        </select></label>
+        <label>跟进情况<textarea name="progress" rows="3"></textarea></label>
+        <label>下次跟进日期<input name="nextActionDate" type="date" /></label>
+        <button class="primary-button" value="default" type="submit">保存商机</button>
+      </form>
+    </dialog>
+
+    <aside class="customer-drawer" id="customerDrawer" aria-hidden="true">
+      <div class="customer-drawer-backdrop" data-customer-close></div>
+      <section class="customer-drawer-panel" aria-label="客户预览">
+        <div id="customerPreview"></div>
+      </section>
+    </aside>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

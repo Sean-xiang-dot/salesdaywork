@@ -1,0 +1,6 @@
+name = "salesdaywork"
+pages_build_output_dir = "dist"
+
+[[kv_namespaces]]
+binding = "SALES_DATA"
+id = "b0e355e22c684d6f813d92089be2edc7"

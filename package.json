@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check app.js && node --check server.mjs"
+    "check": "node --check app.js && node --check server.mjs",
+    "deploy:tencent": "bash scripts/deploy-tencent.sh"
   },
   "engines": {
     "node": ">=20"

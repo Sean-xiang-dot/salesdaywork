@@ -388,6 +388,14 @@ async function serveStatic(req, res, url) {
 async function router(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    if (url.pathname === "/api/health" && req.method === "GET") {
+      return json(res, {
+        ok: true,
+        service: "salesdaywork",
+        version: process.env.APP_VERSION || "development",
+        timestamp: new Date().toISOString()
+      });
+    }
     if (url.pathname.startsWith("/api/auth/")) {
       const handled = await handleAuth(req, res, url);
       if (handled === false) return json(res, { error: "Not found" }, 404);

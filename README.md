@@ -5,7 +5,35 @@
 当前线上地址：
 
 - Production: https://salesdaywork.pages.dev
+- Tencent CVM: http://175.24.138.38
 - GitHub: https://github.com/Sean-xiang-dot/salesdaywork
+
+## 腾讯云发布
+
+腾讯云版本采用固定的版本化发布流程。应用代码位于 `/opt/salesdaywork/releases`，当前生效版本由 `/opt/salesdaywork/current` 指向，业务数据独立保存在 `/var/lib/salesdaywork`，发布新版本不会覆盖已有日报、商机和拜访数据。
+
+日常发布步骤：
+
+```bash
+git push origin main
+npm run deploy:tencent
+```
+
+发布命令会从 GitHub 下载最新 `main`，执行语法检查，切换版本，重启服务并调用 `/api/health` 验证。若启动或健康检查失败，会自动恢复到上一个版本。服务器默认保留最近 5 个发布版本。
+
+服务器运维命令：
+
+```bash
+sudo systemctl status salesdaywork
+sudo journalctl -u salesdaywork -n 100 --no-pager
+sudo /opt/salesdaywork/deploy.sh
+```
+
+需要发布其他分支或提交时，可以在服务器指定 `RELEASE_REF`：
+
+```bash
+sudo RELEASE_REF=<branch-or-commit> /opt/salesdaywork/deploy.sh
+```
 
 ## 项目背景
 

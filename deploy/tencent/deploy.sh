@@ -18,6 +18,11 @@ release_dir="${APP_ROOT}/releases/${release_id}"
 archive_file="/tmp/salesdaywork-${release_id}.zip"
 extract_dir="/tmp/salesdaywork-${release_id}"
 previous_release="$(readlink -f "${APP_ROOT}/current" 2>/dev/null || true)"
+previous_version="$(basename "${previous_release}" 2>/dev/null || true)"
+
+set_version() {
+  printf 'APP_VERSION=%s\n' "$1" > /etc/salesdaywork-version.env
+}
 
 cleanup() {
   rm -f "${archive_file}"
@@ -48,10 +53,12 @@ sudo -u ubuntu npm --prefix "${release_dir}" run check
 
 ln -sfn "${release_dir}" "${APP_ROOT}/current.next"
 mv -Tf "${APP_ROOT}/current.next" "${APP_ROOT}/current"
+set_version "${release_id}"
 
 if ! systemctl restart "${SERVICE_NAME}"; then
   if [[ -n "${previous_release}" ]]; then
     ln -sfn "${previous_release}" "${APP_ROOT}/current"
+    set_version "${previous_version}"
     systemctl restart "${SERVICE_NAME}" || true
   fi
   echo "Service restart failed; restored the previous release." >&2
@@ -70,6 +77,7 @@ done
 if [[ "${healthy}" != "true" ]]; then
   if [[ -n "${previous_release}" ]]; then
     ln -sfn "${previous_release}" "${APP_ROOT}/current"
+    set_version "${previous_version}"
     systemctl restart "${SERVICE_NAME}" || true
   fi
   echo "Health check failed; restored the previous release." >&2
@@ -81,6 +89,8 @@ for old_release in "${old_releases[@]}"; do
   [[ "${old_release}" == "${previous_release}" ]] && continue
   rm -rf "${old_release}"
 done
+
+install -m 0755 "${release_dir}/deploy/tencent/deploy.sh" "${APP_ROOT}/deploy.sh"
 
 echo "Deployed ${release_id} successfully."
 curl -fsS "http://127.0.0.1:3000/api/health"

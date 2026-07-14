@@ -31,6 +31,7 @@ WorkingDirectory=/opt/salesdaywork/current
 Environment=NODE_ENV=production
 Environment=PORT=3000
 Environment=DATA_DIR=/var/lib/salesdaywork
+EnvironmentFile=-/etc/salesdaywork-version.env
 EnvironmentFile=-/etc/salesdaywork.env
 ExecStart=/usr/bin/node /opt/salesdaywork/current/server.mjs
 Restart=always

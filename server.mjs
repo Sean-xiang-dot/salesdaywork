@@ -80,8 +80,16 @@ function buildAuthorizeUrl(config, loginId) {
 }
 
 function inferRole(user) {
-  const text = `${user?.name || ""} ${user?.email || ""}`;
-  if (/Sean|刘想|xiang\.liu|王禹诚|主管|manager|admin/i.test(text)) return "manager";
+  const managerNames = String(process.env.CRM_MANAGER_NAMES || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const managerEmails = String(process.env.CRM_MANAGER_EMAILS || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+  if (managerNames.includes(user?.name || "")) return "manager";
+  if (managerEmails.includes(String(user?.email || "").toLowerCase())) return "manager";
   return "consultant";
 }
 
@@ -163,7 +171,7 @@ async function getSession(req) {
 async function handleAuth(req, res, url) {
   if (url.pathname === "/api/auth/me" && req.method === "GET") {
     const session = await getSession(req);
-    if (!session) return json(res, { loggedIn: false, user: null, role: "visitor" });
+    if (!session) return json(res, { loggedIn: false, user: null, role: "visitor" }, 200, { "set-cookie": clearSessionCookie() });
     return json(res, { loggedIn: true, user: session.user, role: session.role || "consultant" });
   }
 

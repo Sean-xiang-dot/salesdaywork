@@ -11,15 +11,10 @@ const STATE_FILE = join(DATA_DIR, "state.json");
 const SESSIONS_FILE = join(DATA_DIR, "sessions.json");
 const LOGIN_FILE = join(DATA_DIR, "logins.json");
 const SESSION_COOKIE = "crm_session";
-
-const DEFAULT_USER = {
-  id: "local-manager",
-  name: process.env.LOCAL_MANAGER_NAME || "本地主管",
-  email: "",
-  tenantId: "local",
-  tenantName: "Tencent CVM",
-  dimDepart: ""
-};
+const DEFAULT_CLIENT_ID = "da7de9b1f2ad25cd765808611f84fd0c";
+const DEFAULT_CRM_HOST = "crm-tencent.xiaoshouyi.com";
+const DEFAULT_CONNECTAPPS_HOST = "connectapps.xiaoshouyi.com";
+const DEFAULT_BFF_ENDPOINT = "https://crmclaw.xiaoshouyi.com";
 
 function json(res, data, status = 200, headers = {}) {
   res.writeHead(status, {
@@ -64,6 +59,53 @@ function clearSessionCookie() {
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
 }
 
+function authConfig() {
+  return {
+    clientId: process.env.XIAOSHOUYI_CLIENT_ID || DEFAULT_CLIENT_ID,
+    crmHost: process.env.XIAOSHOUYI_CRM_HOST || DEFAULT_CRM_HOST,
+    connectappsHost: process.env.XIAOSHOUYI_CONNECTAPPS_HOST || DEFAULT_CONNECTAPPS_HOST,
+    bffEndpoint: process.env.XIAOSHOUYI_BFF_ENDPOINT || DEFAULT_BFF_ENDPOINT
+  };
+}
+
+function buildAuthorizeUrl(config, loginId) {
+  const redirectUri = `https://${config.connectappsHost}/neocrm/claw/refer/auth/callback`;
+  const authorizeUrl = new URL(`https://${config.crmHost}/oauth/oauth2/authorize.action`);
+  authorizeUrl.searchParams.set("response_type", "code");
+  authorizeUrl.searchParams.set("client_id", config.clientId);
+  authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+  authorizeUrl.searchParams.set("state", `${loginId},${config.clientId}`);
+  authorizeUrl.searchParams.set("oauthType", "standard");
+  return authorizeUrl.toString();
+}
+
+function inferRole(user) {
+  const text = `${user?.name || ""} ${user?.email || ""}`;
+  if (/Sean|刘想|xiang\.liu|王禹诚|主管|manager|admin/i.test(text)) return "manager";
+  return "consultant";
+}
+
+async function queryToken(config, loginId) {
+  const url = new URL(`https://${config.connectappsHost}/neocrm/claw/refer/token/query`);
+  url.searchParams.set("clawId", loginId);
+  const response = await fetch(url, { headers: { accept: "application/json" } });
+  if (!response.ok) return null;
+  return response.json();
+}
+
+async function queryUserInfo(config, accessToken) {
+  const response = await fetch(`${config.bffEndpoint}/user/info`, {
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "x-openapi-baseurl": `https://${config.crmHost}`,
+      accept: "application/json"
+    }
+  });
+  if (!response.ok) return {};
+  const payload = await response.json();
+  return payload?.data?.result || payload?.data || {};
+}
+
 async function readJson(file, fallback) {
   try {
     return JSON.parse(await readFile(file, "utf8"));
@@ -105,6 +147,11 @@ async function getSession(req) {
   const sessions = await readJson(SESSIONS_FILE, {});
   const session = sessions[sessionId];
   if (!session) return null;
+  if (session.user?.id === "local-manager" || session.user?.tenantId === "local") {
+    delete sessions[sessionId];
+    await writeJson(SESSIONS_FILE, sessions);
+    return null;
+  }
   if (session.expiresAt && new Date(session.expiresAt).getTime() <= Date.now()) {
     delete sessions[sessionId];
     await writeJson(SESSIONS_FILE, sessions);
@@ -113,55 +160,59 @@ async function getSession(req) {
   return { id: sessionId, ...session };
 }
 
-async function createLocalSession() {
-  const sessionId = randomId("local-session");
-  const sessions = await readJson(SESSIONS_FILE, {});
-  sessions[sessionId] = {
-    user: DEFAULT_USER,
-    role: "manager",
-    createdAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-  };
-  await writeJson(SESSIONS_FILE, sessions);
-  return { sessionId, session: sessions[sessionId] };
-}
-
 async function handleAuth(req, res, url) {
   if (url.pathname === "/api/auth/me" && req.method === "GET") {
     const session = await getSession(req);
     if (!session) return json(res, { loggedIn: false, user: null, role: "visitor" });
-    return json(res, { loggedIn: true, user: session.user, role: session.role || "manager" });
+    return json(res, { loggedIn: true, user: session.user, role: session.role || "consultant" });
   }
 
   if (url.pathname === "/api/auth/start" && req.method === "POST") {
-    const loginId = randomId("local-login");
+    const config = authConfig();
+    const loginId = randomId("neocrm-web");
     const logins = await readJson(LOGIN_FILE, {});
-    logins[loginId] = { status: "pending", createdAt: new Date().toISOString() };
+    logins[loginId] = { loginId, startedAt: new Date().toISOString() };
     await writeJson(LOGIN_FILE, logins);
     return json(res, {
       loginId,
-      authorizeUrl: `/api/auth/local-login?loginId=${encodeURIComponent(loginId)}`
+      authorizeUrl: buildAuthorizeUrl(config, loginId)
     });
   }
 
-  if (url.pathname === "/api/auth/local-login" && req.method === "GET") {
-    const loginId = url.searchParams.get("loginId");
-    const logins = await readJson(LOGIN_FILE, {});
-    if (loginId && logins[loginId]) {
-      logins[loginId].status = "authenticated";
-      await writeJson(LOGIN_FILE, logins);
-    }
-    return text(res, "<!doctype html><meta charset='utf-8'><title>登录成功</title><p>本地登录已完成，可以关闭此页面。</p>");
-  }
-
   if (url.pathname === "/api/auth/poll" && req.method === "GET") {
+    const config = authConfig();
     const loginId = url.searchParams.get("loginId");
     const logins = await readJson(LOGIN_FILE, {});
     if (!loginId || !logins[loginId]) return json(res, { status: "failed", error: "Login request expired" }, 410);
-    if (logins[loginId].status !== "authenticated") return json(res, { status: "pending" });
+    const tokenPayload = await queryToken(config, loginId);
+    if (!tokenPayload?.accessToken) return json(res, { status: "pending" });
+
+    const crmUser = await queryUserInfo(config, tokenPayload.accessToken);
+    const user = {
+      id: String(crmUser.id || tokenPayload.userId || ""),
+      name: crmUser.name || tokenPayload.userName || "CRM用户",
+      email: crmUser.email || "",
+      tenantId: String(tokenPayload.tenantId || crmUser.tenantId || ""),
+      tenantName: crmUser.tenantName || "",
+      dimDepart: crmUser.dimDepart || ""
+    };
+    const expiresAt = tokenPayload.expiresAt || new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    const sessionId = randomId("crm-session");
+    const session = {
+      user,
+      role: inferRole(user),
+      accessToken: tokenPayload.accessToken,
+      refreshToken: tokenPayload.refreshToken || "",
+      baseUrl: `https://${config.crmHost}`,
+      createdAt: new Date().toISOString(),
+      expiresAt
+    };
+
     delete logins[loginId];
     await writeJson(LOGIN_FILE, logins);
-    const { sessionId, session } = await createLocalSession();
+    const sessions = await readJson(SESSIONS_FILE, {});
+    sessions[sessionId] = session;
+    await writeJson(SESSIONS_FILE, sessions);
     return json(
       res,
       { status: "authenticated", loggedIn: true, user: session.user, role: session.role },

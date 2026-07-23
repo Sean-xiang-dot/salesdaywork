@@ -35,6 +35,27 @@ sudo /opt/salesdaywork/deploy.sh
 sudo RELEASE_REF=<branch-or-commit> /opt/salesdaywork/deploy.sh
 ```
 
+### CRM 集成配置
+
+腾讯云 Node 版已接入销售易 OAuth 登录和 CRM 数据接口。当前口径如下：
+
+- 登录：通过销售易 OAuth 授权，系统只保存当前会话、CRM 用户 ID、姓名、邮箱、部门字段和 access token。
+- 角色：默认真实 CRM 用户为顾问；主管需要在服务器环境变量 `CRM_MANAGER_NAMES` 或 `CRM_MANAGER_EMAILS` 中显式配置，避免误把某个真实账号识别成主管。
+- 团队范围：主管登录后会优先按当前 CRM 用户的 `dimDepart` 查询同部门用户，作为看板和提交人下拉的可见顾问范围；顾问只看自己。
+- 数据权限：`/api/state` 已按角色裁剪。顾问读取和保存都只处理自己的日报、商机、拜访、线上记录、AI 评分和同步日志，不会覆盖其他顾问数据。
+- 客户缓存：`/api/crm/accounts` 会从 CRM 查询当前登录人名下客户并缓存在服务器，拜访和商机客户字段可用本系统做模糊搜索。
+- 业绩取数：`/api/crm/performance` 查询 `SalesPerformance__c`，按 `NewOrOldSP__c` / `new_or_addon__c` / `newType__c` 区分；新客和增购计入新签，老客计入老客。
+- 拜访同步：`/api/crm/visits` 将已匹配 CRM 客户的拜访记录创建为 CRM `activityrecord`，并自动补充 `ownerId`、`dimDepart`、`entityType` 等字段。
+
+常用环境变量：
+
+```bash
+CRM_MANAGER_NAMES=张三,李四
+CRM_MANAGER_EMAILS=manager@example.com
+CRM_CACHE_TTL_MS=1800000
+XIAOSHOUYI_VISIT_ENTITY_TYPE=3771327758883690
+```
+
 ## 项目背景
 
 销售团队在填写日报时，最大的困难不是不会写，而是信息过于分散。

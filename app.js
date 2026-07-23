@@ -4,6 +4,7 @@ const AUTH_API = "/api/auth";
 const CRM_PERFORMANCE_API = "/api/crm/performance";
 const CRM_ACCOUNTS_API = "/api/crm/accounts";
 const CRM_VISITS_API = "/api/crm/visits";
+const CRM_TEAM_API = "/api/crm/team";
 const AI_SCORE_API = "/api/ai/score";
 const USE_SHARED_STATE = location.hostname.endsWith("pages.dev") || (!["", "localhost", "127.0.0.1"].includes(location.hostname) && location.protocol.startsWith("http"));
 const TODAY = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
@@ -14,6 +15,7 @@ let sharedSaveTimer = null;
 let authState = { loggedIn: false, loading: USE_SHARED_STATE, user: null, role: "visitor" };
 let authPollTimer = null;
 let performanceStatus = { loading: false, source: "", message: "" };
+let teamState = { loading: false, syncedAt: "", source: "", department: null, members: [] };
 let ownerManuallyChanged = false;
 let accountCacheStatus = { count: 0, syncedAt: "", message: "" };
 let crmAccountCache = new Map();
@@ -500,6 +502,8 @@ function shouldScopeToCurrentUser() {
 function visibleOwners() {
   const owner = currentCrmOwnerName();
   if (shouldScopeToCurrentUser()) return owner ? [owner] : [];
+  const crmOwners = (teamState.members || []).map((item) => item.name).filter(Boolean);
+  if (crmOwners.length) return Array.from(new Set(crmOwners));
   return state.users;
 }
 
@@ -724,12 +728,38 @@ function renderAuth() {
     return;
   }
   const user = authState.user || {};
+  const roleLabel = authState.role === "manager" ? "主管" : "顾问";
+  const departmentLabel = teamState.department?.id ? ` · ${teamState.department.name || teamState.department.id}` : "";
   target.innerHTML = `
     <div class="auth-card signed-in">
-      <span>${escapeHtml(user.name || "CRM用户")} · ${authState.role === "manager" ? "主管" : "顾问"}</span>
+      <span>${escapeHtml(user.name || "CRM用户")} · ${roleLabel}${escapeHtml(departmentLabel)}</span>
       <button class="ghost-button" type="button" data-auth-action="logout">退出</button>
     </div>
   `;
+}
+
+async function hydrateCrmTeam(force = false) {
+  if (!USE_SHARED_STATE || !authState.loggedIn) {
+    teamState = { loading: false, syncedAt: "", source: "", department: null, members: [] };
+    return;
+  }
+  teamState = { ...teamState, loading: true };
+  try {
+    const response = await fetch(CRM_TEAM_API, { method: force ? "POST" : "GET", cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "CRM团队读取失败");
+    teamState = {
+      loading: false,
+      syncedAt: payload.syncedAt || "",
+      source: payload.source || "",
+      department: payload.department || null,
+      members: payload.members || []
+    };
+    (teamState.members || []).forEach((member) => ensureKnownUser(member.name));
+  } catch {
+    teamState = { loading: false, syncedAt: "", source: "fallback", department: null, members: [] };
+    ensureKnownUser(currentCrmOwnerName());
+  }
 }
 
 async function hydrateAuth() {
@@ -746,6 +776,7 @@ async function hydrateAuth() {
     authState = { loggedIn: false, loading: false, user: null, role: "visitor" };
   }
   if (authState.loggedIn) {
+    await hydrateCrmTeam();
     await hydrateSharedState();
   }
   render();
@@ -1701,8 +1732,11 @@ function renderStorageStatus() {
     ["拜访记录", `${state.visitRecords.filter((item) => canSeeOwner(item.owner)).length} 条`],
     ["待同步拜访", `${state.visitRecords.filter((item) => canSeeOwner(item.owner) && item.accountId && item.crmSyncStatus !== "synced").length} 条`],
     ["线上运营记录", `${state.onlineRecords.filter((item) => canSeeOwner(item.owner)).length} 条`],
+    ["CRM团队范围", teamState.members?.length ? `${teamState.members.length} 人` : "未同步"],
+    ["CRM部门", teamState.department?.name || teamState.department?.id || "暂无"],
     ["CRM客户缓存", accountCacheStatus.count ? `${accountCacheStatus.count} 个客户` : "未同步"],
     ["数据包大小", `${Math.max(1, Math.round(size / 1024))} KB`],
+    ["团队最近同步", teamState.syncedAt ? new Date(teamState.syncedAt).toLocaleString("zh-CN") : "暂无"],
     ["客户最近同步", accountCacheStatus.syncedAt ? new Date(accountCacheStatus.syncedAt).toLocaleString("zh-CN") : "暂无"],
     ["最近云端保存", sharedStateStatus.savedAt ? new Date(sharedStateStatus.savedAt).toLocaleString("zh-CN") : "暂无"],
     ["最近模拟同步", lastSync ? new Date(lastSync).toLocaleString("zh-CN") : "暂无"]

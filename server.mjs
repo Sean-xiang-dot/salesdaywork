@@ -10,11 +10,23 @@ const DATA_DIR = process.env.DATA_DIR || join(ROOT, "data");
 const STATE_FILE = join(DATA_DIR, "state.json");
 const SESSIONS_FILE = join(DATA_DIR, "sessions.json");
 const LOGIN_FILE = join(DATA_DIR, "logins.json");
+const CRM_CACHE_TTL_MS = Number(process.env.CRM_CACHE_TTL_MS || 30 * 60 * 1000);
+const STATE_ARRAY_KEYS = [
+  "reports",
+  "onlineRecords",
+  "visitRecords",
+  "opportunities",
+  "supervisorReviews",
+  "aiScores",
+  "reportVersions",
+  "syncEvents"
+];
 const SESSION_COOKIE = "crm_session";
 const DEFAULT_CLIENT_ID = "da7de9b1f2ad25cd765808611f84fd0c";
 const DEFAULT_CRM_HOST = "crm-tencent.xiaoshouyi.com";
 const DEFAULT_CONNECTAPPS_HOST = "connectapps.xiaoshouyi.com";
 const DEFAULT_BFF_ENDPOINT = "https://crmclaw.xiaoshouyi.com";
+const DEFAULT_VISIT_ENTITY_TYPE = "3771327758883690";
 
 function json(res, data, status = 200, headers = {}) {
   res.writeHead(status, {
@@ -91,6 +103,182 @@ function inferRole(user) {
   if (managerNames.includes(user?.name || "")) return "manager";
   if (managerEmails.includes(String(user?.email || "").toLowerCase())) return "manager";
   return "consultant";
+}
+
+function escapeSoql(value) {
+  return String(value || "").replaceAll("'", "\\'");
+}
+
+function soqlValue(value) {
+  const textValue = String(value || "").trim();
+  if (/^\d+$/.test(textValue)) return textValue;
+  return `'${escapeSoql(textValue)}'`;
+}
+
+function cacheFile(prefix, id) {
+  return join(DATA_DIR, `${prefix}-${String(id || "anonymous").replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+}
+
+function isManager(session) {
+  return session?.role === "manager";
+}
+
+function ownerName(session) {
+  return session?.user?.name || "";
+}
+
+function canSeeRecord(session, record) {
+  return isManager(session) || record?.owner === ownerName(session);
+}
+
+function scopedData(data, session) {
+  if (!data || typeof data !== "object" || isManager(session)) return data;
+  const owner = ownerName(session);
+  const next = { ...data, users: owner ? [owner] : [] };
+  STATE_ARRAY_KEYS.forEach((key) => {
+    next[key] = (data[key] || []).filter((item) => key === "syncEvents" && !item.owner ? true : canSeeRecord(session, item));
+  });
+  next.checklist = data.checklist || [];
+  return next;
+}
+
+function mergeOwnerRecords(existing = {}, incoming = {}, session) {
+  if (isManager(session)) return incoming;
+  const owner = ownerName(session);
+  const mergeByOwner = (key) => [
+    ...((existing[key] || []).filter((item) => item.owner !== owner)),
+    ...((incoming[key] || []).filter((item) => item.owner === owner))
+  ];
+  const mergedEvents = new Map();
+  [...(existing.syncEvents || []), ...((incoming.syncEvents || []).filter((item) => item.owner === owner || !item.owner))]
+    .forEach((item) => {
+      if (item?.id) mergedEvents.set(item.id, item);
+    });
+  return {
+    ...existing,
+    users: Array.from(new Set([...(existing.users || []), owner].filter(Boolean))),
+    checklist: existing.checklist || incoming.checklist || [],
+    reports: mergeByOwner("reports"),
+    onlineRecords: mergeByOwner("onlineRecords"),
+    visitRecords: mergeByOwner("visitRecords"),
+    opportunities: mergeByOwner("opportunities"),
+    supervisorReviews: [
+      ...((existing.supervisorReviews || []).filter((item) => item.owner !== owner && item.createdBy !== owner)),
+      ...((incoming.supervisorReviews || []).filter((item) => item.owner === owner || item.createdBy === owner))
+    ],
+    aiScores: mergeByOwner("aiScores"),
+    reportVersions: mergeByOwner("reportVersions"),
+    syncEvents: Array.from(mergedEvents.values()).slice(-500)
+  };
+}
+
+async function crmQuery(session, soql) {
+  const requestUrl = new URL(`${session.baseUrl || `https://${authConfig().crmHost}`}/rest/data/v2/query`);
+  requestUrl.searchParams.set("q", soql);
+  const response = await fetch(requestUrl, {
+    headers: {
+      authorization: `Bearer ${session.accessToken}`,
+      accept: "application/json"
+    }
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload?.msg || payload?.message || payload?.error_description || "CRM query failed";
+    const error = new Error(message);
+    error.status = response.status;
+    error.payload = payload;
+    error.soql = soql;
+    throw error;
+  }
+  return payload;
+}
+
+async function crmCreateRecord(session, objectApiKey, data) {
+  const response = await fetch(`${session.baseUrl || `https://${authConfig().crmHost}`}/rest/data/v2.0/xobjects/${objectApiKey}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${session.accessToken}`,
+      "content-type": "application/json",
+      accept: "application/json"
+    },
+    body: JSON.stringify({ data })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || (payload?.code && payload.code !== 200)) {
+    const message = payload?.msg || payload?.message || payload?.error_description || "CRM create failed";
+    const error = new Error(message);
+    error.status = response.status;
+    error.payload = payload;
+    error.requestData = data;
+    throw error;
+  }
+  return payload;
+}
+
+function crmRecords(payload) {
+  return payload?.result?.records || payload?.data?.records || payload?.records || [];
+}
+
+async function queryCurrentUser(session) {
+  if (!session.user?.id) return null;
+  try {
+    const result = await crmQuery(session, `SELECT id,name,email,dimDepart FROM user WHERE id = ${soqlValue(session.user.id)} LIMIT 1`);
+    return crmRecords(result)[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function queryDepartmentUsers(session, dimDepart) {
+  if (!dimDepart) return [];
+  const result = await crmQuery(
+    session,
+    `SELECT id,name,email,dimDepart FROM user WHERE dimDepart = ${soqlValue(dimDepart)} LIMIT 200`
+  );
+  return crmRecords(result);
+}
+
+function normalizeCrmUser(item, fallback = {}) {
+  return {
+    id: String(item?.id || fallback.id || ""),
+    name: item?.name || fallback.name || "",
+    email: item?.email || fallback.email || "",
+    dimDepart: String(item?.dimDepart || fallback.dimDepart || "")
+  };
+}
+
+async function resolveTeam(session, { force = false } = {}) {
+  const file = cacheFile("crm-team", session.user?.id);
+  if (!force) {
+    const cached = await readJson(file, null);
+    if (cached?.syncedAt && Date.now() - new Date(cached.syncedAt).getTime() < CRM_CACHE_TTL_MS) return cached;
+  }
+
+  const current = normalizeCrmUser(await queryCurrentUser(session), session.user);
+  const dimDepart = current.dimDepart || session.user?.dimDepart || "";
+  let members = [];
+  if (isManager(session) && dimDepart) {
+    try {
+      members = (await queryDepartmentUsers(session, dimDepart)).map((item) => normalizeCrmUser(item));
+    } catch {
+      members = [];
+    }
+  }
+  if (!members.length) members = [current];
+  const uniqueMembers = Array.from(new Map(members.filter((item) => item.name).map((item) => [item.id || item.name, item])).values());
+  const payload = {
+    syncedAt: new Date().toISOString(),
+    source: dimDepart && isManager(session) ? "crm-dimDepart" : "crm-current-user",
+    role: session.role,
+    currentUser: current,
+    department: {
+      id: dimDepart,
+      name: dimDepart ? `CRM部门 ${dimDepart}` : ""
+    },
+    members: uniqueMembers
+  };
+  await writeJson(file, payload);
+  return payload;
 }
 
 async function queryToken(config, loginId) {
@@ -215,6 +403,11 @@ async function handleAuth(req, res, url) {
       createdAt: new Date().toISOString(),
       expiresAt
     };
+    const crmCurrentUser = await queryCurrentUser(session);
+    if (crmCurrentUser?.dimDepart || crmCurrentUser?.email || crmCurrentUser?.name) {
+      session.user = normalizeCrmUser(crmCurrentUser, session.user);
+      session.role = inferRole(session.user);
+    }
 
     delete logins[loginId];
     await writeJson(LOGIN_FILE, logins);
@@ -254,11 +447,16 @@ async function requireSession(req, res) {
 async function handleState(req, res) {
   const session = await requireSession(req, res);
   if (!session) return;
-  if (req.method === "GET") return json(res, await readState());
+  if (req.method === "GET") {
+    const payload = await readState();
+    return json(res, { ...payload, data: scopedData(payload.data, session), modelVersion: 2 });
+  }
   if (req.method === "PUT") {
     const payload = await readBody(req);
     if (!payload?.data) return json(res, { error: "Invalid payload" }, 400);
-    const next = await writeState(payload);
+    const existing = await readState();
+    const data = mergeOwnerRecords(existing?.data || {}, payload.data, session);
+    const next = await writeState({ ...payload, data });
     return json(res, { ok: true, savedAt: next.savedAt, modelVersion: 2 });
   }
   return json(res, { error: "Method not allowed" }, 405);
@@ -338,86 +536,337 @@ function normalizeText(value) {
 async function handleAccounts(req, res, url) {
   const session = await requireSession(req, res);
   if (!session) return;
-  const state = await readState();
-  const query = normalizeText(url.searchParams.get("q") || "");
-  const source = [
-    ...(state.data?.visitRecords || []),
-    ...(state.data?.opportunities || [])
-  ];
-  const accountsByName = new Map();
-  source.forEach((item) => {
-    const name = item.customer || "";
-    if (!name) return;
-    const key = normalizeText(name);
-    if (!accountsByName.has(key)) {
-      accountsByName.set(key, {
-        accountId: item.accountId || `local-${key}`,
-        accountName: name,
-        ownerName: item.owner || "",
-        phone: "",
-        website: "",
-        address: "",
-        province: "",
-        city: "",
-        updatedAt: item.updatedAt || item.date || ""
+  if (req.method === "POST") {
+    try {
+      const payload = await syncAccounts(session, { force: true });
+      return json(res, {
+        syncedAt: payload.syncedAt,
+        ownerName: payload.ownerName,
+        count: payload.accounts.length,
+        accounts: payload.accounts.slice(0, 50)
       });
+    } catch (error) {
+      return json(res, { error: error.message || "CRM customer sync failed", detail: compactError(error) }, 500);
     }
-  });
-  const accounts = Array.from(accountsByName.values());
-  const matches = accounts
-    .map((account) => {
-      const name = normalizeText(account.accountName);
-      const score = !query ? 1 : name === query ? 100 : name.startsWith(query) ? 80 : name.includes(query) ? 60 : 0;
-      return { account, score };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 12)
-    .map((item) => ({ ...item.account, score: item.score }));
+  }
+  const query = normalizeText(url.searchParams.get("q") || "");
+  try {
+    const payload = await syncAccounts(session);
+    const matches = payload.accounts
+      .map((account) => ({ account, score: accountMatchScore(account, query) }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.account.accountName.localeCompare(b.account.accountName, "zh-CN"))
+      .slice(0, 12)
+      .map((item) => ({ ...item.account, score: item.score }));
+    return json(res, {
+      syncedAt: payload.syncedAt,
+      ownerName: payload.ownerName,
+      count: payload.accounts.length,
+      matches
+    });
+  } catch (error) {
+    return json(res, { error: error.message || "CRM customer search failed", detail: compactError(error) }, 500);
+  }
+}
 
-  return json(res, {
-    syncedAt: new Date().toISOString(),
+function accountMatchScore(account, query) {
+  if (!query) return 1;
+  const name = normalizeText(account.accountName);
+  const aliases = (account.aliases || []).map(normalizeText);
+  if (name === query || aliases.includes(query)) return 100;
+  if (name.startsWith(query)) return 80;
+  if (name.includes(query)) return 60;
+  if (aliases.some((alias) => alias.includes(query))) return 50;
+  return 0;
+}
+
+async function queryOwnedAccounts(session, offset = 0) {
+  const fields = "id,accountName,ownerId,phone,website,address,Province__c,City__c,provinceA__c,cityA__c,RecentVisitDate__c,AccountTypeJJ__c,createdAt,updatedAt";
+  const soql = [
+    `SELECT ${fields} FROM account`,
+    `WHERE ownerId = ${soqlValue(session.user.id)}`,
+    `ORDER BY updatedAt DESC LIMIT ${offset},100`
+  ].join(" ");
+  try {
+    const result = await crmQuery(session, soql);
+    return crmRecords(result);
+  } catch {
+    const fallback = await crmQuery(
+      session,
+      `SELECT id,accountName,ownerId FROM account WHERE ownerId = ${soqlValue(session.user.id)} LIMIT ${offset},100`
+    );
+    return crmRecords(fallback);
+  }
+}
+
+async function syncAccounts(session, { force = false } = {}) {
+  const file = cacheFile("crm-accounts", session.user?.id);
+  if (!force) {
+    const cached = await readJson(file, null);
+    if (cached?.syncedAt && Date.now() - new Date(cached.syncedAt).getTime() < CRM_CACHE_TTL_MS) return cached;
+  }
+  const accounts = [];
+  for (let offset = 0; offset < 1000; offset += 100) {
+    const records = await queryOwnedAccounts(session, offset);
+    accounts.push(...records);
+    if (records.length < 100) break;
+  }
+  const normalized = accounts.map((item) => ({
+    accountId: String(item.id || ""),
+    accountName: item.accountName || "",
+    ownerId: String(item.ownerId || session.user.id || ""),
+    ownerName: session.user.name || "",
+    phone: item.phone || "",
+    website: item.website || "",
+    address: item.address || "",
+    province: item.Province__c || item.provinceA__c || "",
+    city: item.City__c || item.cityA__c || "",
+    provinceId: item.provinceA__c || "",
+    cityId: item.cityA__c || "",
+    recentVisitDate: item.RecentVisitDate__c || "",
+    accountType: item.AccountTypeJJ__c || "",
+    createdAt: item.createdAt || "",
+    updatedAt: item.updatedAt || "",
+    aliases: []
+  })).filter((item) => item.accountId && item.accountName);
+  const payload = {
+    ownerId: session.user.id,
     ownerName: session.user.name,
-    count: accounts.length,
-    matches,
-    localOnly: true
-  });
+    syncedAt: new Date().toISOString(),
+    accounts: normalized
+  };
+  await writeJson(file, payload);
+  return payload;
+}
+
+async function resolveOwnerId(session, owner) {
+  if (!owner || owner === session.user?.name) return session.user?.id;
+  const team = await resolveTeam(session).catch(() => null);
+  const member = team?.members?.find((item) => item.name === owner);
+  if (member?.id) return member.id;
+  const result = await crmQuery(session, `SELECT id,name FROM user WHERE name = '${escapeSoql(owner)}' LIMIT 5`);
+  return crmRecords(result).find((item) => item.name === owner)?.id || session.user?.id;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function beijingDateRange(dateText) {
+  const [year, month, day] = String(dateText).split("-").map(Number);
+  const start = Date.UTC(year, month - 1, day) - 8 * 60 * 60 * 1000;
+  return { start, end: start + DAY_MS - 1 };
+}
+
+function classifyPerformance(record) {
+  const textValue = String(record.NewOrOldSP__c || record.new_or_addon__c || record.newType__c || "");
+  if (textValue.includes("老客")) return "renewal";
+  if (textValue.includes("新客") || textValue.includes("增购")) return "new";
+  return "other";
+}
+
+async function queryPerformance(session, ownerId, dateField, start, end) {
+  const fields = "id,ownerId,amount_Collected__c,Amount__c,NewOrOldSP__c,new_or_addon__c,newType__c,product_famliy__c,dkrq__c,GetDate__c,Account__c";
+  const soql = [
+    `SELECT ${fields} FROM SalesPerformance__c`,
+    `WHERE ownerId = ${soqlValue(ownerId)}`,
+    `AND AccountGet__c = 0`,
+    `AND (${dateField} >= ${start} AND ${dateField} <= ${end})`,
+    `ORDER BY ${dateField} DESC LIMIT 200`
+  ].join(" ");
+  const result = await crmQuery(session, soql);
+  return crmRecords(result);
 }
 
 async function handlePerformance(req, res, url) {
   const session = await requireSession(req, res);
   if (!session) return;
-  return json(res, {
-    ownerName: url.searchParams.get("owner") || session.user.name,
+  try {
+    const date = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
+    const owner = url.searchParams.get("owner") || session.user.name;
+    if (!isManager(session) && owner !== session.user.name) return json(res, { error: "Cannot query another owner" }, 403);
+    const ownerId = await resolveOwnerId(session, owner);
+    if (!ownerId) return json(res, { error: "Cannot resolve CRM owner" }, 400);
+    const { start, end } = beijingDateRange(date);
+    let dateField = "dkrq__c";
+    let records = [];
+    try {
+      records = await queryPerformance(session, ownerId, dateField, start, end);
+    } catch {
+      dateField = "GetDate__c";
+      records = await queryPerformance(session, ownerId, dateField, start, end);
+    }
+    const summary = records.reduce(
+      (acc, record) => {
+        const value = number(record.amount_Collected__c ?? record.Amount__c);
+        const group = classifyPerformance(record);
+        if (group === "new") acc.newSales += value;
+        if (group === "renewal") acc.renewalSales += value;
+        acc.total += value;
+        return acc;
+      },
+      { newSales: 0, renewalSales: 0, total: 0 }
+    );
+    return json(res, {
+      ownerName: owner,
+      ownerId: String(ownerId),
+      date,
+      dateField,
+      ...summary,
+      records: records.map((record) => ({
+        id: String(record.id || ""),
+        amount: number(record.amount_Collected__c ?? record.Amount__c),
+        type: record.NewOrOldSP__c || record.new_or_addon__c || record.newType__c || "",
+        product: record.product_famliy__c || "",
+        date: record[dateField] || ""
+      }))
+    });
+  } catch (error) {
+    return json(res, { error: error.message || "CRM performance query failed", detail: compactError(error) }, 500);
+  }
+}
+
+function dateToTimestamp(date) {
+  const value = date ? new Date(`${date}T09:00:00+08:00`).getTime() : Date.now();
+  return Number.isFinite(value) ? value : Date.now();
+}
+
+function extractCreatedId(payload) {
+  return payload?.data?.record?.id || payload?.data?.id || payload?.result?.id || payload?.id || "";
+}
+
+function compactError(error) {
+  return {
+    message: error?.message || "CRM request failed",
+    status: error?.status || "",
+    crmPayload: error?.payload || null,
+    requestData: error?.requestData || null,
+    soql: error?.soql || ""
+  };
+}
+
+async function queryActivitySample(session) {
+  const result = await crmQuery(
+    session,
+    "SELECT entityType,dimDepart FROM activityrecord WHERE dimDepart != null ORDER BY startTime DESC LIMIT 1"
+  );
+  return crmRecords(result)[0] || null;
+}
+
+async function activityDefaults(session) {
+  const user = await queryCurrentUser(session);
+  let sample = null;
+  try {
+    sample = await queryActivitySample(session);
+  } catch {
+    sample = null;
+  }
+  const defaults = {
+    entityType: String(process.env.XIAOSHOUYI_VISIT_ENTITY_TYPE || sample?.entityType || DEFAULT_VISIT_ENTITY_TYPE),
+    dimDepart: String(session.user?.dimDepart || user?.dimDepart || sample?.dimDepart || "")
+  };
+  if (!defaults.dimDepart) throw new Error("Cannot resolve CRM dimDepart for activityrecord");
+  return defaults;
+}
+
+function buildVisitContent(visit) {
+  return [
+    `【日报拜访】${visit.customer || "未命名客户"} - ${visit.purpose || "客户沟通"}`,
+    `拜访方式：${visit.method || "未填写"}`,
+    visit.points ? `沟通要点：${visit.points}` : "",
+    visit.pain ? `客户痛点：${visit.pain}` : "",
+    visit.nextPlan ? `下一步计划：${visit.nextPlan}` : "",
+    visit.deadline ? `跟进截止日：${visit.deadline}` : "",
+    visit.score ? `拜访评分：${number(visit.score)}/5` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function buildVisitData(session, defaults, visit) {
+  if (!visit.accountId) throw new Error("缺少CRM客户ID，请先在客户名称里选择CRM客户");
+  const startTime = dateToTimestamp(visit.date);
+  const data = {
+    content: buildVisitContent(visit),
+    startTime,
+    endTime: startTime,
     ownerId: session.user.id,
-    date: url.searchParams.get("date") || new Date().toISOString().slice(0, 10),
-    newSales: 0,
-    renewalSales: 0,
-    total: 0,
-    records: [],
-    localOnly: true
-  });
+    dimDepart: defaults.dimDepart,
+    entityType: defaults.entityType,
+    activityRecordFrom: 1,
+    activityRecordFrom_data: visit.accountId,
+    dbcRelation26: visit.accountId
+  };
+  if (visit.nextPlan) data.NextPlan__c = visit.nextPlan;
+  if (visit.pain) data.describe__c = visit.pain;
+  return data;
+}
+
+async function createVisit(session, defaults, visit) {
+  const data = buildVisitData(session, defaults, visit);
+  const payload = await crmCreateRecord(session, "activityrecord", data);
+  return { localId: visit.id, status: "synced", crmRecordId: extractCreatedId(payload), payload };
+}
+
+function dryRunVisit(session, defaults, visit) {
+  return { localId: visit.id, status: "dry-run", requestData: buildVisitData(session, defaults, visit) };
 }
 
 async function handleVisits(req, res) {
   const session = await requireSession(req, res);
   if (!session) return;
-  if (req.method === "GET") return json(res, { ok: true, localOnly: true, user: session.user });
+  if (req.method === "GET") {
+    try {
+      const defaults = await activityDefaults(session);
+      return json(res, {
+        ok: true,
+        user: session.user,
+        defaults,
+        objectApiKey: "activityrecord",
+        requiredFields: ["content", "startTime", "ownerId", "dimDepart", "entityType"]
+      });
+    } catch (error) {
+      return json(res, { error: error.message || "CRM visit debug failed", detail: compactError(error) }, 500);
+    }
+  }
   const body = await readBody(req);
   const visits = Array.isArray(body.visits) ? body.visits : [];
-  return json(res, {
-    syncedAt: new Date().toISOString(),
-    dryRun: true,
-    localOnly: true,
-    total: visits.length,
-    success: 0,
-    failed: visits.length,
-    results: visits.map((visit) => ({
-      localId: visit.id,
-      status: "failed",
-      error: "腾讯服务器本地版暂未配置 CRM 真实同步"
-    }))
-  });
+  if (!visits.length) return json(res, { error: "No visits to sync" }, 400);
+  try {
+    const defaults = await activityDefaults(session);
+    const results = [];
+    for (const visit of visits) {
+      try {
+        results.push(body.dryRun ? dryRunVisit(session, defaults, visit) : await createVisit(session, defaults, visit));
+      } catch (error) {
+        results.push({
+          localId: visit.id,
+          status: "failed",
+          error: error.message || "CRM visit sync failed",
+          detail: compactError(error)
+        });
+      }
+    }
+    const successStatus = body.dryRun ? "dry-run" : "synced";
+    return json(res, {
+      syncedAt: new Date().toISOString(),
+      dryRun: Boolean(body.dryRun),
+      defaults,
+      total: visits.length,
+      success: results.filter((item) => item.status === successStatus).length,
+      failed: results.filter((item) => item.status === "failed").length,
+      results
+    });
+  } catch (error) {
+    return json(res, { error: error.message || "CRM visit sync failed", detail: compactError(error) }, 500);
+  }
+}
+
+async function handleTeam(req, res) {
+  const session = await requireSession(req, res);
+  if (!session) return;
+  try {
+    const payload = await resolveTeam(session, { force: req.method === "POST" });
+    return json(res, payload);
+  } catch (error) {
+    return json(res, { error: error.message || "CRM team query failed", detail: compactError(error) }, 500);
+  }
 }
 
 const MIME = {
@@ -465,6 +914,7 @@ async function router(req, res) {
     if (url.pathname === "/api/crm/accounts") return handleAccounts(req, res, url);
     if (url.pathname === "/api/crm/performance") return handlePerformance(req, res, url);
     if (url.pathname === "/api/crm/visits") return handleVisits(req, res);
+    if (url.pathname === "/api/crm/team") return handleTeam(req, res);
     return serveStatic(req, res, url);
   } catch (error) {
     json(res, { error: error.message || "Server error" }, 500);

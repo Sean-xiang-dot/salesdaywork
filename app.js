@@ -671,6 +671,7 @@ function riskReason(opportunity) {
 }
 
 function render() {
+  renderTopContext();
   renderAuth();
   renderOptions();
   renderPerformanceStatus();
@@ -689,6 +690,18 @@ function render() {
   renderSyncLog();
   renderReadiness();
   renderStorageStatus();
+}
+
+function renderTopContext() {
+  const target = document.querySelector("#topContext");
+  if (!target) return;
+  const dateText = new Date(`${TODAY}T00:00:00`).toLocaleDateString("zh-CN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric"
+  });
+  const teamText = teamState.department?.name || teamState.department?.id || (authState.loggedIn ? "CRM销售团队" : "销售团队");
+  target.textContent = `${dateText} · ${teamText}`;
 }
 
 function addSyncEvent(event) {
@@ -1936,19 +1949,25 @@ document.querySelector("#dailyForm").addEventListener("submit", (event) => {
   report.opportunityUpdates = Array.from(document.querySelectorAll("#dailyOpportunityTable tr[data-opportunity-id]"))
     .map((row) => {
       const get = (field) => row.querySelector(`[data-daily-field="${field}"]`)?.dataset.value?.trim() || "";
+      const opportunity = state.opportunities.find((item) => item.id === row.dataset.opportunityId) || {};
+      const stage = get("stage");
+      const nextActionDate = get("nextActionDate");
+      const stageChanged = stage && stage !== (opportunity.stage || "");
+      const nextActionDateChanged = nextActionDate && nextActionDate !== (opportunity.nextActionDate || "");
       return {
         opportunityId: row.dataset.opportunityId,
-        stage: get("stage"),
+        stage,
         todayProgress: get("todayProgress"),
         nextPlan: get("nextPlan"),
-        nextActionDate: get("nextActionDate"),
+        nextActionDate,
         closeResult: get("closeResult"),
+        changed: Boolean(get("todayProgress") || get("nextPlan") || get("closeResult") || stageChanged || nextActionDateChanged),
         crmSyncStatus: "pending",
         crmRecordId: "",
         crmSyncError: ""
       };
     })
-    .filter((item) => item.todayProgress || item.nextPlan || item.closeResult || item.nextActionDate);
+    .filter((item) => item.changed);
   const previousReport = state.reports.find((item) => item.date === report.date && item.owner === report.owner);
   report.id = previousReport?.id || uid("r");
   if (previousReport) {
@@ -2349,6 +2368,10 @@ function beginAccountCellEdit(cell, value, commitAccount) {
   const search = () => {
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(async () => {
+      if (!USE_SHARED_STATE || !authState.loggedIn) {
+        list.innerHTML = `<button type="button" disabled>登录 CRM 后可搜索匹配客户；当前可直接输入客户名</button>`;
+        return;
+      }
       try {
         const url = new URL(CRM_ACCOUNTS_API, location.origin);
         url.searchParams.set("q", input.value.trim());
@@ -2364,7 +2387,10 @@ function beginAccountCellEdit(cell, value, commitAccount) {
         renderStorageStatus();
         renderSuggestions(payload.matches || []);
       } catch (error) {
-        list.innerHTML = `<button type="button" disabled>${escapeHtml(error.message || "客户搜索失败")}</button>`;
+        const message = /token|401|403|登录|Not logged/i.test(error.message || "")
+          ? "CRM登录可能已过期，请重新登录后搜索客户；也可先直接输入客户名"
+          : error.message || "客户搜索失败，可先直接输入客户名";
+        list.innerHTML = `<button type="button" disabled>${escapeHtml(message)}</button>`;
       }
     }, 220);
   };

@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { access, readFile, mkdir, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -966,8 +966,14 @@ async function serveStatic(req, res, url) {
   const filePath = join(ROOT, relative);
   if (!filePath.startsWith(ROOT)) return json(res, { error: "Forbidden" }, 403);
   try {
+    await access(filePath);
     res.writeHead(200, { "content-type": MIME[extname(filePath)] || "application/octet-stream" });
-    createReadStream(filePath).pipe(res);
+    const stream = createReadStream(filePath);
+    stream.on("error", () => {
+      if (!res.headersSent) json(res, { error: "Not found" }, 404);
+      else res.end();
+    });
+    stream.pipe(res);
   } catch {
     json(res, { error: "Not found" }, 404);
   }

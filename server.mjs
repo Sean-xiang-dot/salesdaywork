@@ -798,6 +798,40 @@ function buildVisitData(session, defaults, visit) {
   return data;
 }
 
+function buildActionContent(action) {
+  const title = action.type === "daily-action" ? "日报动作" : "商机推进";
+  return [
+    `【${title}】${action.customer || "未命名客户"}`,
+    action.owner ? `顾问：${action.owner}` : "",
+    action.date ? `日期：${action.date}` : "",
+    action.stage ? `阶段：${action.stage}` : "",
+    action.progress ? `推进内容：${action.progress}` : "",
+    action.nextPlan ? `下一步计划：${action.nextPlan}` : "",
+    action.nextActionDate ? `下次跟进：${action.nextActionDate}` : "",
+    action.amount ? `商机金额：${number(action.amount).toLocaleString("zh-CN")}` : "",
+    action.reportId ? `来源日报：${action.reportId}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function buildActionData(session, defaults, action) {
+  if (!action.accountId) throw new Error("缺少CRM客户ID，请先匹配CRM客户");
+  if (!isManager(session) && action.owner && action.owner !== session.user.name) {
+    throw new Error("不能同步其他顾问的CRM动作");
+  }
+  const startTime = dateToTimestamp(action.date);
+  return {
+    content: buildActionContent(action),
+    startTime,
+    endTime: startTime,
+    ownerId: session.user.id,
+    dimDepart: defaults.dimDepart,
+    entityType: defaults.entityType,
+    activityRecordFrom: 1,
+    activityRecordFrom_data: action.accountId,
+    dbcRelation26: action.accountId
+  };
+}
+
 async function createVisit(session, defaults, visit) {
   const data = buildVisitData(session, defaults, visit);
   const payload = await crmCreateRecord(session, "activityrecord", data);
@@ -806,6 +840,16 @@ async function createVisit(session, defaults, visit) {
 
 function dryRunVisit(session, defaults, visit) {
   return { localId: visit.id, status: "dry-run", requestData: buildVisitData(session, defaults, visit) };
+}
+
+async function createCrmAction(session, defaults, action) {
+  const data = buildActionData(session, defaults, action);
+  const payload = await crmCreateRecord(session, "activityrecord", data);
+  return { localId: action.localId || action.id, status: "synced", crmRecordId: extractCreatedId(payload), payload };
+}
+
+function dryRunCrmAction(session, defaults, action) {
+  return { localId: action.localId || action.id, status: "dry-run", requestData: buildActionData(session, defaults, action) };
 }
 
 async function handleVisits(req, res) {
@@ -869,6 +913,42 @@ async function handleTeam(req, res) {
   }
 }
 
+async function handleActions(req, res) {
+  const session = await requireSession(req, res);
+  if (!session) return;
+  const body = await readBody(req);
+  const actions = Array.isArray(body.actions) ? body.actions : [];
+  if (!actions.length) return json(res, { error: "No CRM actions to sync" }, 400);
+  try {
+    const defaults = await activityDefaults(session);
+    const results = [];
+    for (const action of actions) {
+      try {
+        results.push(body.dryRun ? dryRunCrmAction(session, defaults, action) : await createCrmAction(session, defaults, action));
+      } catch (error) {
+        results.push({
+          localId: action.localId || action.id,
+          status: "failed",
+          error: error.message || "CRM action sync failed",
+          detail: compactError(error)
+        });
+      }
+    }
+    const successStatus = body.dryRun ? "dry-run" : "synced";
+    return json(res, {
+      syncedAt: new Date().toISOString(),
+      dryRun: Boolean(body.dryRun),
+      defaults,
+      total: actions.length,
+      success: results.filter((item) => item.status === successStatus).length,
+      failed: results.filter((item) => item.status === "failed").length,
+      results
+    });
+  } catch (error) {
+    return json(res, { error: error.message || "CRM action sync failed", detail: compactError(error) }, 500);
+  }
+}
+
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -915,6 +995,7 @@ async function router(req, res) {
     if (url.pathname === "/api/crm/performance") return handlePerformance(req, res, url);
     if (url.pathname === "/api/crm/visits") return handleVisits(req, res);
     if (url.pathname === "/api/crm/team") return handleTeam(req, res);
+    if (url.pathname === "/api/crm/actions" && req.method === "POST") return handleActions(req, res);
     return serveStatic(req, res, url);
   } catch (error) {
     json(res, { error: error.message || "Server error" }, 500);

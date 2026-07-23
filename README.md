@@ -46,6 +46,7 @@ sudo RELEASE_REF=<branch-or-commit> /opt/salesdaywork/deploy.sh
 - 客户缓存：`/api/crm/accounts` 会从 CRM 查询当前登录人名下客户并缓存在服务器，拜访和商机客户字段可用本系统做模糊搜索。
 - 业绩取数：`/api/crm/performance` 查询 `SalesPerformance__c`，按 `NewOrOldSP__c` / `new_or_addon__c` / `newType__c` 区分；新客和增购计入新签，老客计入老客。
 - 拜访同步：`/api/crm/visits` 将已匹配 CRM 客户的拜访记录创建为 CRM `activityrecord`，并自动补充 `ownerId`、`dimDepart`、`entityType` 等字段。
+- 商机与日报动作同步：`/api/crm/actions` 采用手动同步和失败重试机制，先将商机推进、日报客户动作写入 CRM `activityrecord` 作为过程留痕；CRM 商机主表阶段字段待业务字段映射确认后再接自动更新。
 
 常用环境变量：
 

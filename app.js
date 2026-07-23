@@ -5,6 +5,7 @@ const CRM_PERFORMANCE_API = "/api/crm/performance";
 const CRM_ACCOUNTS_API = "/api/crm/accounts";
 const CRM_VISITS_API = "/api/crm/visits";
 const CRM_TEAM_API = "/api/crm/team";
+const CRM_ACTIONS_API = "/api/crm/actions";
 const AI_SCORE_API = "/api/ai/score";
 const USE_SHARED_STATE = location.hostname.endsWith("pages.dev") || (!["", "localhost", "127.0.0.1"].includes(location.hostname) && location.protocol.startsWith("http"));
 const TODAY = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
@@ -356,6 +357,9 @@ function normalizeState(nextState) {
   nextState.opportunities = nextState.opportunities.map((item) => ({
     ...item,
     accountId: item.accountId || "",
+    crmSyncStatus: item.crmSyncStatus || (item.crmRecordId ? "synced" : item.accountId ? "pending" : "local"),
+    crmRecordId: item.crmRecordId || "",
+    crmSyncError: item.crmSyncError || "",
     amount: number(item.amount),
     stage: item.stage || "初步沟通",
     grade: item.grade || inferOpportunityGrade(item),
@@ -387,6 +391,15 @@ function normalizeState(nextState) {
     owner: item.owner || "",
     savedAt: item.savedAt || item.createdAt || new Date().toISOString(),
     changedFields: item.changedFields || []
+  }));
+  nextState.reports = nextState.reports.map((report) => ({
+    ...report,
+    opportunityUpdates: (report.opportunityUpdates || []).map((item) => ({
+      ...item,
+      crmSyncStatus: item.crmSyncStatus || "pending",
+      crmRecordId: item.crmRecordId || "",
+      crmSyncError: item.crmSyncError || ""
+    }))
   }));
   return nextState;
 }
@@ -1600,11 +1613,13 @@ async function refreshAiScores() {
 
 function renderSync() {
   const pendingVisits = state.visitRecords.filter((item) => canSeeOwner(item.owner) && item.accountId && item.crmSyncStatus !== "synced");
+  const pendingOpportunities = pendingOpportunityActions();
+  const pendingDailyActions = pendingDailyCrmActions();
   const syncItems = [
     {
       title: "商机阶段变化",
-      value: state.opportunities.filter((item) => canSeeOwner(item.owner) && ["合同推进", "付款中", "已成交"].includes(item.stage)).length,
-      text: "建议回写 CRM 商机阶段和预计成交信息"
+      value: pendingOpportunities.length,
+      text: "先写回CRM过程记录，商机主表阶段字段待映射确认"
     },
     {
       title: "拜访记录",
@@ -1612,9 +1627,9 @@ function renderSync() {
       text: "匹配到CRM客户后，可回写 activityrecord"
     },
     {
-      title: "新签/回款结果",
-      value: reportsToday().filter((item) => number(item.newSales) + number(item.renewalSales) > 0).length,
-      text: "回写订单或回款线索，避免只停留在日报"
+      title: "日报客户动作",
+      value: pendingDailyActions.length,
+      text: "把日报中的商机推进写成客户跟进过程"
     }
   ];
 
@@ -1631,6 +1646,54 @@ function renderSync() {
     .join("");
 }
 
+function pendingOpportunityActions() {
+  return state.opportunities
+    .filter((item) => canSeeOwner(item.owner) && item.crmSyncStatus !== "synced")
+    .filter((item) => item.accountId || item.crmSyncStatus === "failed")
+    .map((item) => ({
+      localId: item.id,
+      type: "opportunity",
+      owner: item.owner,
+      customer: item.customer,
+      accountId: item.accountId,
+      date: item.updatedAt || TODAY,
+      stage: item.stage,
+      progress: item.progress || item.need,
+      nextPlan: item.nextPlan || "",
+      nextActionDate: item.nextActionDate,
+      amount: item.amount,
+      sourceRecord: item
+    }));
+}
+
+function pendingDailyCrmActions() {
+  return state.reports
+    .filter((report) => canSeeOwner(report.owner))
+    .flatMap((report) =>
+      (report.opportunityUpdates || [])
+        .filter((update) => update.crmSyncStatus !== "synced")
+        .map((update) => {
+          const opportunity = state.opportunities.find((item) => item.id === update.opportunityId) || {};
+          return {
+            localId: `${report.id}:${update.opportunityId}`,
+            type: "daily-action",
+            owner: report.owner,
+            customer: opportunity.customer || update.customer || "",
+            accountId: opportunity.accountId || update.accountId || "",
+            date: report.date,
+            stage: update.closeResult || update.stage || opportunity.stage || "",
+            progress: update.todayProgress,
+            nextPlan: update.nextPlan,
+            nextActionDate: update.nextActionDate,
+            amount: opportunity.amount,
+            reportId: report.id,
+            sourceRecord: update
+          };
+        })
+    )
+    .filter((item) => item.progress || item.nextPlan || item.stage || item.nextActionDate);
+}
+
 function renderSyncRetryList() {
   const target = document.querySelector("#syncRetryList");
   if (!target) return;
@@ -1638,11 +1701,14 @@ function renderSyncRetryList() {
     .filter((item) => canSeeOwner(item.owner) && item.accountId && ["failed", "pending"].includes(item.crmSyncStatus))
     .slice()
     .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
-  target.innerHTML = visits.length
+  const opportunityActions = pendingOpportunityActions();
+  const dailyActions = pendingDailyCrmActions();
+  const hasItems = visits.length || opportunityActions.length || dailyActions.length;
+  target.innerHTML = hasItems
     ? `
       <div class="retry-head">
-        <strong>待处理拜访同步</strong>
-        <span>${visits.length} 条，可单条重试</span>
+        <strong>待处理CRM同步</strong>
+        <span>拜访 ${visits.length} 条 · 商机 ${opportunityActions.length} 条 · 日报动作 ${dailyActions.length} 条</span>
       </div>
       ${visits
         .map(
@@ -1657,8 +1723,30 @@ function renderSyncRetryList() {
           `
         )
         .join("")}
+      ${opportunityActions
+        .map((action) => syncActionRow(action, "商机推进", "data-retry-opportunity-action"))
+        .join("")}
+      ${dailyActions
+        .map((action) => syncActionRow(action, "日报动作", "data-retry-daily-action"))
+        .join("")}
     `
-    : `<div class="empty-preview">暂无失败或待同步拜访</div>`;
+    : `<div class="empty-preview">暂无失败或待同步CRM动作</div>`;
+}
+
+function syncActionRow(action, label, retryAttr) {
+  const disabled = action.accountId ? "" : "disabled";
+  const detail = action.accountId
+    ? action.sourceRecord?.crmSyncError || "等待同步到CRM过程记录"
+    : "缺少CRM客户ID，请先在客户字段匹配CRM客户";
+  return `
+    <article class="retry-row">
+      <div>
+        <strong>${escapeHtml(action.date || TODAY)} · ${escapeHtml(action.owner)} · ${escapeHtml(label)} · ${escapeHtml(action.customer || "未匹配客户")}</strong>
+        <span>${escapeHtml(detail)}</span>
+      </div>
+      <button class="ghost-button" type="button" ${retryAttr}="${escapeHtml(action.localId)}" ${disabled}>重试</button>
+    </article>
+  `;
 }
 
 function renderReadiness() {
@@ -1854,7 +1942,10 @@ document.querySelector("#dailyForm").addEventListener("submit", (event) => {
         todayProgress: get("todayProgress"),
         nextPlan: get("nextPlan"),
         nextActionDate: get("nextActionDate"),
-        closeResult: get("closeResult")
+        closeResult: get("closeResult"),
+        crmSyncStatus: "pending",
+        crmRecordId: "",
+        crmSyncError: ""
       };
     })
     .filter((item) => item.todayProgress || item.nextPlan || item.closeResult || item.nextActionDate);
@@ -1888,6 +1979,8 @@ document.querySelector("#dailyForm").addEventListener("submit", (event) => {
       target.nextActionDate = update.nextActionDate || target.nextActionDate;
       target.status = update.closeResult ? "closed" : target.status || "open";
       target.updatedAt = report.date;
+      target.crmSyncStatus = target.accountId ? "pending" : "local";
+      target.crmSyncError = target.accountId ? "" : "缺少CRM客户ID，请先匹配CRM客户";
     }
   });
 
@@ -1995,6 +2088,8 @@ function beginOpportunityCellEdit(cell) {
       opportunity.customer = account.accountName || currentValue || "";
       opportunity.accountId = account.accountId || "";
       opportunity.updatedAt = TODAY;
+      opportunity.crmSyncStatus = account.accountId ? "pending" : "local";
+      opportunity.crmSyncError = "";
       saveState();
       renderOpportunities();
       renderDashboard();
@@ -2134,6 +2229,9 @@ function opportunityFromDraft(draft) {
   };
   opportunity.grade = draft.grade || inferOpportunityGrade(opportunity);
   opportunity.score = number(draft.score) || inferOpportunityScore(opportunity);
+  opportunity.crmSyncStatus = opportunity.accountId ? "pending" : "local";
+  opportunity.crmRecordId = "";
+  opportunity.crmSyncError = opportunity.accountId ? "" : "缺少CRM客户ID，请先匹配CRM客户";
   return opportunity;
 }
 
@@ -2581,6 +2679,8 @@ function updateOpportunityFromCell(cell, value) {
   if (field === "stage" && ["已成交", "已丢单"].includes(value)) opportunity.status = "closed";
   if (field === "status" && value === "open" && ["已成交", "已丢单"].includes(opportunity.stage)) opportunity.stage = "合同推进";
   opportunity.updatedAt = TODAY;
+  opportunity.crmSyncStatus = opportunity.accountId ? "pending" : "local";
+  opportunity.crmSyncError = opportunity.accountId ? "" : "缺少CRM客户ID，请先匹配CRM客户";
   saveState();
   renderOpportunities();
   renderDashboard();
@@ -2750,17 +2850,114 @@ async function syncVisitBatch(pendingVisits, { silent = false } = {}) {
   }
 }
 
+function crmActionErrorMessage(result) {
+  if (!result) return "CRM动作同步失败";
+  const payload = result.detail?.crmPayload || {};
+  const crmText = payload.errorInfo || payload.msg || payload.message || payload.error_description || "";
+  const fieldText = result.detail?.requestData
+    ? `字段：${Object.keys(result.detail.requestData).join("、")}`
+    : "";
+  return [result.error, crmText, fieldText].filter(Boolean).join("；") || "CRM动作同步失败";
+}
+
+async function syncCrmActions(actions, label, { silent = false } = {}) {
+  if (!USE_SHARED_STATE || !authState.loggedIn) {
+    alert("请先在顶部完成 CRM 登录，再同步CRM动作。");
+    return;
+  }
+  const eligible = actions.filter((item) => item.accountId);
+  if (!eligible.length) {
+    alert("暂无可同步的CRM动作。请先在客户字段匹配CRM客户。");
+    return;
+  }
+  eligible.forEach((item) => {
+    item.sourceRecord.crmSyncStatus = "syncing";
+    item.sourceRecord.crmSyncError = "";
+  });
+  saveState();
+  renderSync();
+  renderSyncRetryList();
+  renderStorageStatus();
+
+  try {
+    const response = await fetch(CRM_ACTIONS_API, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ actions: eligible.map(({ sourceRecord, ...action }) => action) })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `${label}同步失败`);
+    const results = new Map((payload.results || []).map((item) => [item.localId, item]));
+    eligible.forEach((action) => {
+      const result = results.get(action.localId);
+      if (result?.status === "synced") {
+        action.sourceRecord.crmSyncStatus = "synced";
+        action.sourceRecord.crmRecordId = result.crmRecordId || "已创建";
+        action.sourceRecord.crmSyncError = "";
+      } else {
+        action.sourceRecord.crmSyncStatus = "failed";
+        action.sourceRecord.crmSyncError = crmActionErrorMessage(result);
+      }
+    });
+    addSyncEvent({
+      status: "crm-actions",
+      title: `${label}同步到CRM`,
+      detail: `成功 ${payload.success || 0} 条，失败 ${payload.failed || 0} 条`,
+      success: payload.success,
+      failed: payload.failed
+    });
+    saveState();
+    render();
+    if (!silent) alert(`${label}同步完成：成功 ${payload.success || 0} 条，失败 ${payload.failed || 0} 条。`);
+  } catch (error) {
+    eligible.forEach((action) => {
+      action.sourceRecord.crmSyncStatus = "failed";
+      action.sourceRecord.crmSyncError = error.message || `${label}同步失败`;
+    });
+    addSyncEvent({
+      status: "crm-actions-failed",
+      title: `${label}同步失败`,
+      detail: error.message || `${label}同步失败`,
+      failed: eligible.length
+    });
+    saveState();
+    render();
+    if (!silent) alert(error.message || `${label}同步失败`);
+  }
+}
+
 document.querySelector("#syncVisitsButton")?.addEventListener("click", async () => {
   const pendingVisits = state.visitRecords.filter((item) => canSeeOwner(item.owner) && item.accountId && item.crmSyncStatus !== "synced");
   await syncVisitBatch(pendingVisits);
 });
 
+document.querySelector("#syncOpportunityActionsButton")?.addEventListener("click", async () => {
+  await syncCrmActions(pendingOpportunityActions(), "商机推进");
+});
+
+document.querySelector("#syncDailyActionsButton")?.addEventListener("click", async () => {
+  await syncCrmActions(pendingDailyCrmActions(), "日报动作");
+});
+
 document.querySelector("#syncRetryList")?.addEventListener("click", async (event) => {
   const id = event.target.closest("[data-retry-visit]")?.dataset.retryVisit;
-  if (!id) return;
-  const visit = state.visitRecords.find((item) => item.id === id && canSeeOwner(item.owner));
-  if (!visit) return;
-  await syncVisitBatch([visit]);
+  if (id) {
+    const visit = state.visitRecords.find((item) => item.id === id && canSeeOwner(item.owner));
+    if (!visit) return;
+    await syncVisitBatch([visit]);
+    return;
+  }
+  const opportunityActionId = event.target.closest("[data-retry-opportunity-action]")?.dataset.retryOpportunityAction;
+  if (opportunityActionId) {
+    const action = pendingOpportunityActions().find((item) => item.localId === opportunityActionId);
+    if (action) await syncCrmActions([action], "商机推进");
+    return;
+  }
+  const dailyActionId = event.target.closest("[data-retry-daily-action]")?.dataset.retryDailyAction;
+  if (dailyActionId) {
+    const action = pendingDailyCrmActions().find((item) => item.localId === dailyActionId);
+    if (action) await syncCrmActions([action], "日报动作");
+  }
 });
 
 document.querySelector("#exportDataButton")?.addEventListener("click", () => {

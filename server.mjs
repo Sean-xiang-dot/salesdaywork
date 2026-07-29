@@ -538,7 +538,12 @@ function localScore(report = {}, context = {}) {
     report.tomorrowPlan
   ];
   const completeness = Math.round((completenessFields.filter(Boolean).length / completenessFields.length) * 20);
-  const workload = Math.min(25, number(report.touches) * 2 + number(report.selfProspects) * 3 + number(report.softwareTouches) * 2 + number(report.posts) * 2);
+  const leadWorkload =
+    number(report.posts) * 2 +
+    number(report.leadCarryover) +
+    number(report.firstFollowedLeads) * 2 -
+    number(report.uncontactedLeads);
+  const workload = Math.min(25, number(report.touches) * 2 + number(report.selfProspects) * 3 + number(report.softwareTouches) * 2 + Math.max(0, leadWorkload));
   const opportunity = Math.min(25, opportunityUpdates.filter((item) => item.todayProgress || item.nextPlan).length * 8 + lineCount(report.opportunityText) * 5 + opportunities.filter((item) => item.owner === report.owner).length * 2);
   const visit = Math.min(15, visitRecords.filter((item) => item.owner === report.owner).length * 6 + number(report.visitScore) * 2);
   const plan = Math.min(15, lineCount(report.tomorrowPlan) * 5 + (String(report.tomorrowPlan || "").length > 20 ? 5 : 0));
@@ -548,13 +553,16 @@ function localScore(report = {}, context = {}) {
   if (!opportunityUpdates.length && !lineCount(report.opportunityText)) issues.push("商机推进留痕不足");
   if (!visitRecords.filter((item) => item.owner === report.owner).length && !lineCount(report.visits)) issues.push("客户拜访记录不足");
   if (number(report.touches) < 8) issues.push("客户触达偏少");
+  if (number(report.uncontactedLeads) > 0) issues.push("存在未沟通线索");
+  if (number(report.leadCarryover) > 0 && number(report.firstFollowedLeads) === 0) issues.push("线索承接未形成首轮跟进");
   return {
     score,
     level: score >= 85 ? "A" : score >= 70 ? "B" : score >= 55 ? "C" : "D",
-    summary: `今日完成触达 ${number(report.touches)} 个客户，新签 ${number(report.newSales).toLocaleString("zh-CN")}，商机推进 ${opportunityUpdates.length || lineCount(report.opportunityText)} 条。`,
+    summary: `今日完成触达 ${number(report.touches)} 个客户，新增线索 ${number(report.posts)} 条，首轮跟进 ${number(report.firstFollowedLeads)} 条，未沟通 ${number(report.uncontactedLeads)} 条，商机推进 ${opportunityUpdates.length || lineCount(report.opportunityText)} 条。`,
     highlights: [
       number(report.newSales) > 0 ? "产生新签业绩" : "",
       number(report.selfProspects) > 0 ? "有自拓动作" : "",
+      number(report.firstFollowedLeads) > 0 ? "完成线索首轮跟进" : "",
       report.tomorrowPlan ? "明日计划有留痕" : ""
     ].filter(Boolean),
     issues,
@@ -563,6 +571,10 @@ function localScore(report = {}, context = {}) {
       touches: number(report.touches),
       newSales: number(report.newSales),
       renewalSales: number(report.renewalSales),
+      newLeads: number(report.posts),
+      leadCarryover: number(report.leadCarryover),
+      uncontactedLeads: number(report.uncontactedLeads),
+      firstFollowedLeads: number(report.firstFollowedLeads),
       opportunityUpdates: opportunityUpdates.length,
       visitRecords: visitRecords.filter((item) => item.owner === report.owner).length
     },

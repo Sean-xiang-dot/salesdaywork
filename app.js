@@ -329,6 +329,9 @@ function normalizeState(nextState) {
     onlineViews: number(report.onlineViews) || number(report.posts) * 800,
     onlineMessages: number(report.onlineMessages) || number(report.softwareTouches) + number(report.selfProspects),
     onlineLeads: number(report.onlineLeads) || Math.min(3, number(report.selfProspects) || 0),
+    leadCarryover: number(report.leadCarryover),
+    uncontactedLeads: number(report.uncontactedLeads),
+    firstFollowedLeads: number(report.firstFollowedLeads),
     visitScore: number(report.visitScore) || (lineCount(report.visits) ? 3 : 0),
     visitInsight: report.visitInsight || "",
     actionChecks: report.actionChecks || inferActionChecks(report, nextState.checklist)
@@ -607,7 +610,8 @@ function scoreReport(report) {
   const completeness = Math.round(
     (completenessFields.filter(Boolean).length / completenessFields.length) * 20
   );
-  const workload = Math.min(20, number(report.touches) + number(report.posts) * 2 + number(report.selfProspects) * 2);
+  const leadWorkload = number(report.posts) * 2 + number(report.leadCarryover) + number(report.firstFollowedLeads) * 2 - number(report.uncontactedLeads);
+  const workload = Math.min(20, number(report.touches) + number(report.selfProspects) * 2 + Math.max(0, leadWorkload));
   const updates = (report.opportunityUpdates || []).filter((item) => item.todayProgress || item.nextPlan);
   const opportunityQuality = Math.min(30, reportMoveCount(report) * 7 + (updates.length ? 8 : 0) + (updates.some((item) => item.stage) ? 5 : 0));
   const planQuality = Math.min(15, lineCount(report.tomorrowPlan) * 5 + (String(report.tomorrowPlan || "").length > 20 ? 5 : 0));
@@ -620,6 +624,9 @@ function workloadScoreFromStats(stats) {
     100,
     number(stats.touches) * 4 +
       number(stats.onlineLeads) * 8 +
+      number(stats.firstFollowedLeads) * 5 +
+      number(stats.leadCarryover) * 2 -
+      number(stats.uncontactedLeads) * 3 +
       number(stats.opportunityMoves) * 12 +
       number(stats.visitCount) * 14 +
       (stats.report ? 10 : 0)
@@ -651,6 +658,10 @@ function ownerStats(owner) {
     newSales: report ? number(report.newSales) : 0,
     renewalSales: report ? number(report.renewalSales) : 0,
     touches: report ? number(report.touches) : 0,
+    newLeads: report ? number(report.posts) : 0,
+    leadCarryover: report ? number(report.leadCarryover) : 0,
+    uncontactedLeads: report ? number(report.uncontactedLeads) : 0,
+    firstFollowedLeads: report ? number(report.firstFollowedLeads) : 0,
     opportunityMoves: report ? reportMoveCount(report) : 0,
     amount: opportunities.reduce((sum, item) => sum + number(item.amount), 0)
   };
@@ -1053,7 +1064,7 @@ function renderDashboard() {
           <div class="rank-no">${index + 1}</div>
           <div class="rank-main">
             <strong>${item.owner}</strong>
-            <span>线上线索 ${item.onlineLeads} · 拜访评分 ${item.visitScore || 0} · 商机推进 ${item.opportunityMoves} · 商机池 ${item.amount.toLocaleString("zh-CN")}</span>
+            <span>新增线索 ${item.newLeads} · 首轮跟进 ${item.firstFollowedLeads} · 未沟通 ${item.uncontactedLeads} · 商机推进 ${item.opportunityMoves}</span>
           </div>
           <div class="score-pill">${item.score}分</div>
         </div>
@@ -1086,7 +1097,7 @@ function renderDashboard() {
       .join("") || `<div class="risk-item"><strong>暂无高风险商机</strong><span>今日商机推进节奏正常。</span></div>`;
 
   document.querySelector("#workloadList").innerHTML = workloadSorted
-    .map((item) => diagnosisRow(item.owner, item.workloadScore, `触达 ${item.touches} · 拜访 ${item.visitCount} · 商机推进 ${item.opportunityMoves} · 线上线索 ${item.onlineLeads}`))
+    .map((item) => diagnosisRow(item.owner, item.workloadScore, `触达 ${item.touches} · 线索承接 ${item.leadCarryover} · 首轮跟进 ${item.firstFollowedLeads} · 未沟通 ${item.uncontactedLeads}`))
     .join("");
 
   document.querySelector("#opportunityScoreList").innerHTML = reserveSorted
@@ -1131,8 +1142,9 @@ function coachInsightCard(item) {
   if (item.reserveScore < 45) issues.push("商机储备偏弱");
   if (item.visitScore && item.visitScore < 4) issues.push("拜访质量需复盘");
   if (item.opportunityMoves < 2) issues.push("商机推进记录偏少");
+  if (item.uncontactedLeads > 0) issues.push("存在未沟通线索");
   const level = issues.length >= 2 ? "low" : issues.length ? "mid" : "high";
-  const summary = `新签 ${item.newSales.toLocaleString("zh-CN")}，老客 ${item.renewalSales.toLocaleString("zh-CN")}，触达 ${item.touches}，商机推进 ${item.opportunityMoves} 条。`;
+  const summary = `新签 ${item.newSales.toLocaleString("zh-CN")}，老客 ${item.renewalSales.toLocaleString("zh-CN")}，触达 ${item.touches}，新增线索 ${item.newLeads}，首轮跟进 ${item.firstFollowedLeads}。`;
   const advice = issues.length ? `建议聚焦：${issues.join("、")}。` : "今日动作结构较完整，可沉淀为组内参考样例。";
   return `
     <article class="coach-card ${level}">
@@ -1413,7 +1425,7 @@ function renderAi() {
       return `
         <div class="ai-card">
           <strong>${item.owner} · ${aiScore ? `${aiScore.score}分` : `${item.score}分`}</strong>
-          <span>日报盘点：${aiScore?.summary || `${highlight}，触达 ${item.touches} 个客户，工作量饱和度 ${item.workloadScore}分。`}</span>
+          <span>日报盘点：${aiScore?.summary || `${highlight}，触达 ${item.touches} 个客户，新增线索 ${item.newLeads}，首轮跟进 ${item.firstFollowedLeads}，未沟通 ${item.uncontactedLeads}。`}</span>
           <span>拜访总结：今日 ${item.visitCount} 条拜访，平均评分 ${item.visitScore || 0}分。</span>
           <span>商机储备：储备评分 ${item.reserveScore}分，商机池 ${item.amount.toLocaleString("zh-CN")}。</span>
           <span>问题：${aiScore?.issues?.join("、") || problem}。</span>
@@ -1483,7 +1495,10 @@ function diffReportFields(before = {}, after = {}) {
     newSales: "新签业绩",
     renewalSales: "老客业绩",
     touches: "触达客户数",
-    posts: "发帖数",
+    posts: "新增有效线索",
+    leadCarryover: "今日线索承接",
+    uncontactedLeads: "今日未沟通线索",
+    firstFollowedLeads: "完成首轮跟进线索",
     selfProspects: "自拓数量",
     softwareTouches: "软件IP触达",
     opportunityUpdates: "商机跟进",
@@ -1943,7 +1958,7 @@ document.querySelector("#dailyForm").addEventListener("submit", (event) => {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const report = Object.fromEntries(form.entries());
-  ["newSales", "renewalSales", "touches", "posts", "selfProspects", "softwareTouches"].forEach((field) => {
+  ["newSales", "renewalSales", "touches", "posts", "leadCarryover", "uncontactedLeads", "firstFollowedLeads", "selfProspects", "softwareTouches"].forEach((field) => {
     report[field] = number(report[field]);
   });
   report.opportunityUpdates = Array.from(document.querySelectorAll("#dailyOpportunityTable tr[data-opportunity-id]"))

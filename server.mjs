@@ -92,6 +92,10 @@ function buildAuthorizeUrl(config, loginId) {
 }
 
 function inferRole(user) {
+  const managerKeywords = String(process.env.CRM_MANAGER_ROLE_KEYWORDS || "组长,负责人,分公司负责人,主管,经理,总监,城市经理,区域负责人")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
   const managerNames = String(process.env.CRM_MANAGER_NAMES || "")
     .split(",")
     .map((item) => item.trim())
@@ -100,6 +104,19 @@ function inferRole(user) {
     .split(",")
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
+  const roleText = [
+    user?.roleName,
+    user?.role,
+    user?.userRole,
+    user?.profileName,
+    user?.title,
+    user?.position,
+    user?.jobTitle,
+    user?.duty,
+    user?.post,
+    user?.departmentRole
+  ].filter(Boolean).join(" ");
+  if (managerKeywords.some((keyword) => roleText.includes(keyword))) return "manager";
   if (managerNames.includes(user?.name || "")) return "manager";
   if (managerEmails.includes(String(user?.email || "").toLowerCase())) return "manager";
   return "consultant";
@@ -221,21 +238,36 @@ function crmRecords(payload) {
 
 async function queryCurrentUser(session) {
   if (!session.user?.id) return null;
+  const extendedFields = "id,name,email,dimDepart,roleName,role,userRole,profileName,title,position,jobTitle,duty,post,departmentRole";
   try {
-    const result = await crmQuery(session, `SELECT id,name,email,dimDepart FROM user WHERE id = ${soqlValue(session.user.id)} LIMIT 1`);
+    const result = await crmQuery(session, `SELECT ${extendedFields} FROM user WHERE id = ${soqlValue(session.user.id)} LIMIT 1`);
     return crmRecords(result)[0] || null;
   } catch {
-    return null;
+    try {
+      const result = await crmQuery(session, `SELECT id,name,email,dimDepart FROM user WHERE id = ${soqlValue(session.user.id)} LIMIT 1`);
+      return crmRecords(result)[0] || null;
+    } catch {
+      return null;
+    }
   }
 }
 
 async function queryDepartmentUsers(session, dimDepart) {
   if (!dimDepart) return [];
-  const result = await crmQuery(
-    session,
-    `SELECT id,name,email,dimDepart FROM user WHERE dimDepart = ${soqlValue(dimDepart)} LIMIT 200`
-  );
-  return crmRecords(result);
+  const extendedFields = "id,name,email,dimDepart,roleName,role,userRole,profileName,title,position,jobTitle,duty,post,departmentRole";
+  try {
+    const result = await crmQuery(
+      session,
+      `SELECT ${extendedFields} FROM user WHERE dimDepart = ${soqlValue(dimDepart)} LIMIT 200`
+    );
+    return crmRecords(result);
+  } catch {
+    const result = await crmQuery(
+      session,
+      `SELECT id,name,email,dimDepart FROM user WHERE dimDepart = ${soqlValue(dimDepart)} LIMIT 200`
+    );
+    return crmRecords(result);
+  }
 }
 
 function normalizeCrmUser(item, fallback = {}) {
@@ -243,7 +275,17 @@ function normalizeCrmUser(item, fallback = {}) {
     id: String(item?.id || fallback.id || ""),
     name: item?.name || fallback.name || "",
     email: item?.email || fallback.email || "",
-    dimDepart: String(item?.dimDepart || fallback.dimDepart || "")
+    dimDepart: String(item?.dimDepart || fallback.dimDepart || ""),
+    roleName: item?.roleName || fallback.roleName || "",
+    role: item?.role || fallback.role || "",
+    userRole: item?.userRole || fallback.userRole || "",
+    profileName: item?.profileName || fallback.profileName || "",
+    title: item?.title || fallback.title || "",
+    position: item?.position || fallback.position || "",
+    jobTitle: item?.jobTitle || fallback.jobTitle || "",
+    duty: item?.duty || fallback.duty || "",
+    post: item?.post || fallback.post || "",
+    departmentRole: item?.departmentRole || fallback.departmentRole || ""
   };
 }
 
@@ -390,7 +432,17 @@ async function handleAuth(req, res, url) {
       email: crmUser.email || "",
       tenantId: String(tokenPayload.tenantId || crmUser.tenantId || ""),
       tenantName: crmUser.tenantName || "",
-      dimDepart: crmUser.dimDepart || ""
+      dimDepart: crmUser.dimDepart || "",
+      roleName: crmUser.roleName || "",
+      role: crmUser.role || "",
+      userRole: crmUser.userRole || "",
+      profileName: crmUser.profileName || "",
+      title: crmUser.title || "",
+      position: crmUser.position || "",
+      jobTitle: crmUser.jobTitle || "",
+      duty: crmUser.duty || "",
+      post: crmUser.post || "",
+      departmentRole: crmUser.departmentRole || ""
     };
     const expiresAt = tokenPayload.expiresAt || new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
     const sessionId = randomId("crm-session");

@@ -40,7 +40,7 @@ sudo RELEASE_REF=<branch-or-commit> /opt/salesdaywork/deploy.sh
 腾讯云 Node 版已接入销售易 OAuth 登录和 CRM 数据接口。当前口径如下：
 
 - 登录：通过销售易 OAuth 授权，系统只保存当前会话、CRM 用户 ID、姓名、邮箱、部门字段和 access token。
-- 角色：默认真实 CRM 用户为顾问；主管需要在服务器环境变量 `CRM_MANAGER_NAMES` 或 `CRM_MANAGER_EMAILS` 中显式配置，避免误把某个真实账号识别成主管。
+- 角色：优先读取 CRM 用户角色/岗位/职务字段，包含 `组长`、`负责人`、`分公司负责人`、`主管`、`经理`、`总监`、`城市经理`、`区域负责人` 等关键词时识别为主管；`CRM_MANAGER_NAMES` / `CRM_MANAGER_EMAILS` 仅作为兜底配置。
 - 团队范围：主管登录后会优先按当前 CRM 用户的 `dimDepart` 查询同部门用户，作为看板和提交人下拉的可见顾问范围；顾问只看自己。
 - 数据权限：`/api/state` 已按角色裁剪。顾问读取和保存都只处理自己的日报、商机、拜访、线上记录、AI 评分和同步日志，不会覆盖其他顾问数据。
 - 客户缓存：`/api/crm/accounts` 会从 CRM 查询当前登录人名下客户并缓存在服务器，拜访和商机客户字段可用本系统做模糊搜索。
@@ -51,6 +51,7 @@ sudo RELEASE_REF=<branch-or-commit> /opt/salesdaywork/deploy.sh
 常用环境变量：
 
 ```bash
+CRM_MANAGER_ROLE_KEYWORDS=组长,负责人,分公司负责人,主管,经理,总监,城市经理,区域负责人
 CRM_MANAGER_NAMES=张三,李四
 CRM_MANAGER_EMAILS=manager@example.com
 CRM_CACHE_TTL_MS=1800000

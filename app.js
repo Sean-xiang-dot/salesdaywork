@@ -643,7 +643,7 @@ function leadStayDays(lead) {
 function weeklyPendingLeads(owner) {
   return state.leadRecords
     .filter((item) => canSeeOwner(item.owner) && item.owner === owner && !isClosedLead(item))
-    .filter((item) => !item.firstTouchAt || leadStayDays(item) >= 2 || item.updatedAt === TODAY)
+    .filter((item) => ["open", "submitted"].includes(item.status) || !item.firstTouchAt || leadStayDays(item) >= 2 || item.updatedAt === TODAY)
     .sort((a, b) => {
       const untouched = Number(!b.firstTouchAt) - Number(!a.firstTouchAt);
       if (untouched) return untouched;
@@ -1048,24 +1048,24 @@ function renderDailyLeads() {
   const count = document.querySelector("#dailyLeadCount");
   if (!tbody || !count) return;
   count.textContent = `${leads.length}条`;
-  tbody.innerHTML =
-    leads
-      .map(
-        (item) => `
+  const leadRows = leads
+    .map(
+      (item) => `
           <tr data-lead-id="${item.id}">
             ${dailyLeadCell(item.customer || "潜在客户", "customer", "account", item.customer, item.accountId)}
             ${dailyLeadCell(formatDateForDisplay(item.assignedAt), "assignedAt", "date", item.assignedAt)}
             <td>${leadStayDays(item)}天</td>
-            ${dailyLeadCell(formatDateForDisplay(item.firstTouchAt), "firstTouchAt", "date", item.firstTouchAt)}
-            ${dailyLeadCell(item.communication || "点击填写", "communication", "textarea", item.communication)}
+            ${dailyLeadCell(item.firstTouchAt ? formatDateForDisplay(item.firstTouchAt) : "填写首次触达", "firstTouchAt", "date", item.firstTouchAt)}
+            ${dailyLeadCell(item.communication || "填写沟通情况", "communication", "textarea", item.communication)}
             ${dailyLeadCell(item.tagStatus || "待沟通", "tagStatus", "select", item.tagStatus || "待沟通")}
-            ${dailyLeadCell(item.nextPlan || "点击填写", "nextPlan", "textarea", item.nextPlan)}
+            ${dailyLeadCell(item.nextPlan || "填写下一步计划", "nextPlan", "textarea", item.nextPlan)}
             ${dailyLeadCell(formatLeadStatus(item.status), "status", "select", item.status || "open")}
             <td>${crmStatusLabel(item.crmSyncStatus, item.crmSyncError)}</td>
           </tr>
         `
-      )
-      .join("") || `<tr><td class="empty-row" colspan="9">该提交人本周暂无未跟进线索</td></tr>`;
+    )
+    .join("");
+  tbody.innerHTML = leadRows + Array.from({ length: 3 }, (_, index) => dailyLeadDraftRow(index)).join("");
 }
 
 function dailyLeadCell(label, field, type, value, accountId = "") {
@@ -1079,6 +1079,34 @@ function dailyLeadCell(label, field, type, value, accountId = "") {
 function formatLeadStatus(value) {
   const labels = { open: "编辑/保存/提交", submitted: "已提交", converted: "已转商机", invalid: "无效", closed: "已关闭" };
   return labels[value] || value || "编辑/保存/提交";
+}
+
+function dailyLeadDraftRow(index) {
+  return `
+    <tr class="draft-row" data-daily-lead-draft-row="${index}">
+      ${dailyLeadCell("潜在客户", "customer", "account", "")}
+      ${dailyLeadCell("自动", "assignedAt", "date", TODAY)}
+      <td>自动</td>
+      ${dailyLeadCell("填写首次触达", "firstTouchAt", "date", "")}
+      ${dailyLeadCell("填写沟通情况", "communication", "textarea", "")}
+      ${dailyLeadCell("待沟通", "tagStatus", "select", "待沟通")}
+      ${dailyLeadCell("填写下一步计划", "nextPlan", "textarea", "")}
+      ${dailyLeadCell("编辑/保存/提交", "status", "select", "open")}
+      <td>${crmStatusLabel("local", "新增后进入本系统线索池")}</td>
+    </tr>
+  `;
+}
+
+function ensureDailyLeadDraftRows() {
+  const rows = Array.from(document.querySelectorAll("#dailyLeadTable tr[data-daily-lead-draft-row]"));
+  const last = rows[rows.length - 1];
+  if (!last || !isDailyLeadDraftRowFilled(last)) return;
+  last.insertAdjacentHTML("afterend", dailyLeadDraftRow(rows.length));
+}
+
+function isDailyLeadDraftRowFilled(row) {
+  const value = (field) => row.querySelector(`[data-daily-lead-field="${field}"]`)?.dataset.value?.trim() || "";
+  return Boolean(value("customer") || value("firstTouchAt") || value("communication") || value("nextPlan"));
 }
 
 function renderDailyVisits(count = 3) {
@@ -2183,6 +2211,56 @@ document.querySelector("#dailyForm").addEventListener("submit", (event) => {
       };
     })
     .filter((item) => item.changed);
+  const draftLeadRows = Array.from(document.querySelectorAll("#dailyLeadTable tr[data-daily-lead-draft-row]"))
+    .filter(isDailyLeadDraftRowFilled);
+  const invalidDraftLead = draftLeadRows.find((row) => {
+    const get = (field) => row.querySelector(`[data-daily-lead-field="${field}"]`)?.dataset.value?.trim() || "";
+    return !get("customer") || !get("communication") || !get("nextPlan");
+  });
+  if (invalidDraftLead) {
+    alert("新增线索请至少填写：潜在客户、沟通情况描述、下一步计划。");
+    return;
+  }
+  const newLeadUpdates = draftLeadRows.map((row) => {
+    const get = (field) => row.querySelector(`[data-daily-lead-field="${field}"]`)?.dataset.value?.trim() || "";
+    const accountId = row.querySelector(`[data-daily-lead-field="customer"]`)?.dataset.accountId || "";
+    const communication = get("communication");
+    const firstTouchAt = get("firstTouchAt") || (communication ? report.date : "");
+    const leadRecord = {
+      id: uid("ld"),
+      owner: report.owner,
+      accountId,
+      customer: get("customer"),
+      assignedAt: get("assignedAt") || report.date,
+      retainedAt: get("assignedAt") || report.date,
+      firstTouchAt,
+      communication,
+      tagStatus: get("tagStatus") || (firstTouchAt ? "已触达" : "待沟通"),
+      nextPlan: get("nextPlan"),
+      status: get("status") === "open" ? "submitted" : get("status") || "submitted",
+      updatedAt: report.date,
+      crmSyncStatus: accountId ? "pending" : "local",
+      crmRecordId: "",
+      crmSyncError: accountId ? "" : "未匹配CRM客户，可先本地保存"
+    };
+    state.leadRecords.push(leadRecord);
+    return {
+      leadId: leadRecord.id,
+      accountId: leadRecord.accountId,
+      customer: leadRecord.customer,
+      assignedAt: leadRecord.assignedAt,
+      firstTouchAt: leadRecord.firstTouchAt,
+      communication: leadRecord.communication,
+      tagStatus: leadRecord.tagStatus,
+      nextPlan: leadRecord.nextPlan,
+      status: leadRecord.status,
+      changed: true,
+      crmSyncStatus: leadRecord.crmSyncStatus,
+      crmRecordId: "",
+      crmSyncError: leadRecord.crmSyncError
+    };
+  });
+  report.leadUpdates.push(...newLeadUpdates);
   const previousReport = state.reports.find((item) => item.date === report.date && item.owner === report.owner);
   report.id = previousReport?.id || uid("r");
   if (previousReport) {
@@ -2558,6 +2636,11 @@ function beginDailyVisitCellEdit(cell) {
 function beginDailyLeadCellEdit(cell) {
   if (!cell || cell.querySelector(".sheet-editor")) return;
   const row = cell.closest("tr[data-lead-id]");
+  const draftRow = cell.closest("tr[data-daily-lead-draft-row]");
+  if (draftRow) {
+    beginDailyLeadDraftCellEdit(cell);
+    return;
+  }
   const lead = state.leadRecords.find((item) => item.id === row?.dataset.leadId);
   if (!lead) return;
   const field = cell.dataset.dailyLeadField;
@@ -2580,6 +2663,26 @@ function beginDailyLeadCellEdit(cell) {
   const editor = createDailyLeadEditor(field, type, value);
   attachInlineEditor(cell, editor, type, (nextValue) => {
     updateDailyLeadFromCell(cell, nextValue);
+  });
+}
+
+function beginDailyLeadDraftCellEdit(cell) {
+  const field = cell.dataset.dailyLeadField;
+  const type = cell.dataset.editorType;
+  const value = cell.dataset.value || "";
+  if (field === "customer") {
+    beginAccountCellEdit(cell, value, (account) => {
+      rememberCrmAccounts([account]);
+      cell.dataset.accountId = account.accountId || "";
+      updateInlineCell(cell, account.accountName || value, account.accountName || "潜在客户");
+      ensureDailyLeadDraftRows();
+    });
+    return;
+  }
+  const editor = createDailyLeadEditor(field, type, value);
+  attachInlineEditor(cell, editor, type, (nextValue) => {
+    updateInlineCell(cell, nextValue, formatDailyLeadCellLabel(field, nextValue));
+    ensureDailyLeadDraftRows();
   });
 }
 
@@ -2612,6 +2715,19 @@ function updateDailyLeadFromCell(cell, value) {
   renderDashboard();
   renderManagerFocus();
   renderSync();
+}
+
+function formatDailyLeadCellLabel(field, value) {
+  if (field === "assignedAt") return value ? formatDateForDisplay(value) : "自动";
+  if (field === "firstTouchAt") return value ? formatDateForDisplay(value) : "填写首次触达";
+  if (field === "status") return formatLeadStatus(value);
+  const labels = {
+    customer: "潜在客户",
+    communication: "填写沟通情况",
+    tagStatus: "待沟通",
+    nextPlan: "填写下一步计划"
+  };
+  return value || labels[field] || "-";
 }
 
 function createDailyVisitEditor(field, type, value) {
@@ -3109,8 +3225,8 @@ document.querySelector("#leadForm")?.addEventListener("submit", (event) => {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const lead = Object.fromEntries(form.entries());
-  if (!lead.owner || !lead.customer?.trim()) {
-    alert("请填写顾问和潜在客户。");
+  if (!lead.owner || !lead.customer?.trim() || !lead.communication?.trim() || !lead.nextPlan?.trim()) {
+    alert("请填写顾问、潜在客户、沟通情况描述和下一步计划。");
     return;
   }
   state.leadRecords.push({
@@ -3120,9 +3236,9 @@ document.querySelector("#leadForm")?.addEventListener("submit", (event) => {
     customer: lead.customer.trim(),
     assignedAt: lead.assignedAt || TODAY,
     retainedAt: lead.assignedAt || TODAY,
-    firstTouchAt: "",
+    firstTouchAt: TODAY,
     communication: lead.communication || "",
-    tagStatus: lead.communication ? "已触达" : "待沟通",
+    tagStatus: "已触达",
     nextPlan: lead.nextPlan || "",
     status: "open",
     updatedAt: TODAY,

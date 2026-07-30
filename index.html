@@ -223,6 +223,37 @@
             <div class="daily-opportunity-panel">
               <div class="section-title">
                 <div>
+                  <h3>本周内未跟进的线索</h3>
+                  <p>按提交人自动拉取已分配线索，保存日报后更新线索状态并新增一条活动记录</p>
+                </div>
+                <div class="top-actions">
+                  <button class="ghost-button" id="addLeadButton" type="button">创建潜客</button>
+                  <span id="dailyLeadCount">0条</span>
+                </div>
+              </div>
+              <div class="table-wrap compact-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>潜在客户</th>
+                      <th>分配时间</th>
+                      <th>停留时间</th>
+                      <th>首次触达时间</th>
+                      <th>沟通情况描述</th>
+                      <th>标记状态</th>
+                      <th>下一步计划</th>
+                      <th>状态</th>
+                      <th>CRM提交状态</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dailyLeadTable"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="daily-opportunity-panel">
+              <div class="section-title">
+                <div>
                   <h3>本周需要跟进的商机</h3>
                   <p>按提交人自动拉取未关单商机，保存日报后同步更新商机表</p>
                 </div>
@@ -452,6 +483,7 @@
               <button class="ghost-button" id="mockSyncButton" type="button">模拟同步</button>
               <button class="ghost-button" id="syncOpportunityActionsButton" type="button">同步商机推进</button>
               <button class="ghost-button" id="syncDailyActionsButton" type="button">同步日报动作</button>
+              <button class="ghost-button" id="syncLeadActionsButton" type="button">同步线索动作</button>
               <button class="primary-button" id="syncVisitsButton" type="button">同步拜访到CRM</button>
             </div>
             <div class="sync-grid" id="syncGrid"></div>
@@ -522,6 +554,24 @@
         <label>跟进情况<textarea name="progress" rows="3"></textarea></label>
         <label>下次跟进日期<input name="nextActionDate" type="date" /></label>
         <button class="primary-button" value="default" type="submit">保存商机</button>
+      </form>
+    </dialog>
+
+    <dialog id="leadDialog">
+      <form method="dialog" class="dialog-form" id="leadForm">
+        <div class="panel-head">
+          <div>
+            <h2>创建潜客</h2>
+            <p>先在本系统沉淀，后续进入 CRM 同步队列</p>
+          </div>
+          <button class="icon-button" value="cancel" type="submit">×</button>
+        </div>
+        <label>顾问<select name="owner" required></select></label>
+        <label>潜在客户<input name="customer" required placeholder="客户/学校/机构名称" /></label>
+        <label>分配时间<input name="assignedAt" type="date" /></label>
+        <label>沟通情况<textarea name="communication" rows="3" placeholder="客户来源、电话情况、微信沟通等"></textarea></label>
+        <label>下一步计划<textarea name="nextPlan" rows="3" placeholder="下一次触达方式和目标"></textarea></label>
+        <button class="primary-button" value="default" type="submit">保存潜客</button>
       </form>
     </dialog>
 

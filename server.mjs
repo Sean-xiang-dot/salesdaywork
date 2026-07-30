@@ -14,6 +14,7 @@ const CRM_CACHE_TTL_MS = Number(process.env.CRM_CACHE_TTL_MS || 30 * 60 * 1000);
 const STATE_ARRAY_KEYS = [
   "reports",
   "onlineRecords",
+  "leadRecords",
   "visitRecords",
   "opportunities",
   "supervisorReviews",
@@ -177,6 +178,7 @@ function mergeOwnerRecords(existing = {}, incoming = {}, session) {
     checklist: existing.checklist || incoming.checklist || [],
     reports: mergeByOwner("reports"),
     onlineRecords: mergeByOwner("onlineRecords"),
+    leadRecords: mergeByOwner("leadRecords"),
     visitRecords: mergeByOwner("visitRecords"),
     opportunities: mergeByOwner("opportunities"),
     supervisorReviews: [
@@ -528,12 +530,14 @@ function lineCount(text) {
 
 function localScore(report = {}, context = {}) {
   const opportunityUpdates = report.opportunityUpdates || [];
+  const leadUpdates = report.leadUpdates || [];
   const visitRecords = context.visitRecords || [];
   const opportunities = context.opportunities || [];
   const completenessFields = [
     report.owner,
     report.newSales || report.renewalSales,
     report.touches,
+    leadUpdates.length || report.firstFollowedLeads,
     opportunityUpdates.length || lineCount(report.opportunityText),
     report.tomorrowPlan
   ];
@@ -543,7 +547,7 @@ function localScore(report = {}, context = {}) {
     number(report.leadCarryover) +
     number(report.firstFollowedLeads) * 2 -
     number(report.uncontactedLeads);
-  const workload = Math.min(25, number(report.touches) * 2 + number(report.selfProspects) * 3 + number(report.softwareTouches) * 2 + Math.max(0, leadWorkload));
+  const workload = Math.min(25, number(report.touches) * 2 + number(report.selfProspects) * 3 + number(report.softwareTouches) * 2 + leadUpdates.length * 3 + Math.max(0, leadWorkload));
   const opportunity = Math.min(25, opportunityUpdates.filter((item) => item.todayProgress || item.nextPlan).length * 8 + lineCount(report.opportunityText) * 5 + opportunities.filter((item) => item.owner === report.owner).length * 2);
   const visit = Math.min(15, visitRecords.filter((item) => item.owner === report.owner).length * 6 + number(report.visitScore) * 2);
   const plan = Math.min(15, lineCount(report.tomorrowPlan) * 5 + (String(report.tomorrowPlan || "").length > 20 ? 5 : 0));
@@ -558,7 +562,7 @@ function localScore(report = {}, context = {}) {
   return {
     score,
     level: score >= 85 ? "A" : score >= 70 ? "B" : score >= 55 ? "C" : "D",
-    summary: `今日完成触达 ${number(report.touches)} 个客户，新增线索 ${number(report.posts)} 条，首轮跟进 ${number(report.firstFollowedLeads)} 条，未沟通 ${number(report.uncontactedLeads)} 条，商机推进 ${opportunityUpdates.length || lineCount(report.opportunityText)} 条。`,
+    summary: `今日完成触达 ${number(report.touches)} 个客户，新增线索 ${number(report.posts)} 条，首轮跟进 ${number(report.firstFollowedLeads)} 条，线索更新 ${leadUpdates.length} 条，未沟通 ${number(report.uncontactedLeads)} 条，商机推进 ${opportunityUpdates.length || lineCount(report.opportunityText)} 条。`,
     highlights: [
       number(report.newSales) > 0 ? "产生新签业绩" : "",
       number(report.selfProspects) > 0 ? "有自拓动作" : "",
@@ -575,6 +579,7 @@ function localScore(report = {}, context = {}) {
       leadCarryover: number(report.leadCarryover),
       uncontactedLeads: number(report.uncontactedLeads),
       firstFollowedLeads: number(report.firstFollowedLeads),
+      leadUpdates: leadUpdates.length,
       opportunityUpdates: opportunityUpdates.length,
       visitRecords: visitRecords.filter((item) => item.owner === report.owner).length
     },
@@ -863,7 +868,7 @@ function buildVisitData(session, defaults, visit) {
 }
 
 function buildActionContent(action) {
-  const title = action.type === "daily-action" ? "日报动作" : "商机推进";
+  const title = action.type === "daily-action" ? "日报动作" : action.type === "lead-action" ? "线索承接" : "商机推进";
   return [
     `【${title}】${action.customer || "未命名客户"}`,
     action.owner ? `顾问：${action.owner}` : "",

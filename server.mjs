@@ -1286,7 +1286,11 @@ async function serveStatic(req, res, url) {
   if (!filePath.startsWith(ROOT)) return json(res, { error: "Forbidden" }, 403);
   try {
     await access(filePath);
-    res.writeHead(200, { "content-type": MIME[extname(filePath)] || "application/octet-stream" });
+    const ext = extname(filePath);
+    res.writeHead(200, {
+      "content-type": MIME[ext] || "application/octet-stream",
+      "cache-control": [".html", ".js", ".css"].includes(ext) ? "no-store" : "public, max-age=3600"
+    });
     const stream = createReadStream(filePath);
     stream.on("error", () => {
       if (!res.headersSent) json(res, { error: "Not found" }, 404);

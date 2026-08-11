@@ -8,6 +8,7 @@ const CRM_TEAM_API = "/api/crm/team";
 const CRM_ACTIONS_API = "/api/crm/actions";
 const CRM_OPPORTUNITIES_API = "/api/crm/opportunities";
 const CRM_LEADS_API = "/api/crm/leads";
+const CRM_LEAD_RECORDS_API = "/api/crm/lead-records";
 const AI_SCORE_API = "/api/ai/score";
 const USE_SHARED_STATE = location.hostname.endsWith("pages.dev") || (!["", "localhost", "127.0.0.1"].includes(location.hostname) && location.protocol.startsWith("http"));
 const TODAY = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
@@ -127,9 +128,9 @@ const seedState = {
     { id: "on3", date: "2026-07-08", owner: "夏俊莉", platform: "小红书", posts: 1, views: 620, likes: 22, saves: 10, comments: 2, messages: 4, leads: 1, source: "后台导入" }
   ],
   leadRecords: [
-    { id: "ld1", owner: "梁霄淇", customer: "瀚林校区", assignedAt: "2026-07-06", retainedAt: "2026-07-06", firstTouchAt: "", communication: "售后增购线索，需补首次电话确认预算。", tagStatus: "待沟通", nextPlan: "今日完成首轮电话并确认付款节点", status: "open", crmSyncStatus: "local", crmRecordId: "", crmSyncError: "未匹配CRM客户，可先本地保存" },
-    { id: "ld2", owner: "冷哲", customer: "佛山英语体验客户", assignedAt: "2026-07-07", retainedAt: "2026-07-07", firstTouchAt: "", communication: "小红书私信转入，未完成电话沟通。", tagStatus: "待沟通", nextPlan: "微信确认线下体验时间", status: "open", crmSyncStatus: "local", crmRecordId: "", crmSyncError: "未匹配CRM客户，可先本地保存" },
-    { id: "ld3", owner: "夏俊莉", customer: "Sherry 老师", assignedAt: "2026-07-05", retainedAt: "2026-07-05", firstTouchAt: "2026-07-08", communication: "已初步沟通硬件需求，预算未确认。", tagStatus: "已触达", nextPlan: "补充预算和设备规格", status: "open", crmSyncStatus: "local", crmRecordId: "", crmSyncError: "未匹配CRM客户，可先本地保存" }
+    { id: "crm-lead-demo-1", leadObjectRecordId: "demo-lead-1", owner: "梁霄淇", customer: "瀚林校区", source: "CRM线索", assignedAt: "2026-07-06", retainedAt: "2026-07-06", firstTouchAt: "", communication: "售后增购线索，需补首次电话确认预算。", tagStatus: "待沟通", nextPlan: "今日完成首轮电话并确认付款节点", status: "open", crmSyncStatus: "local", crmRecordId: "", crmSyncError: "CRM示例线索未关联客户，暂不能写客户过程记录", leadObjectSyncStatus: "synced", leadObjectSyncError: "" },
+    { id: "crm-lead-demo-2", leadObjectRecordId: "demo-lead-2", owner: "冷哲", customer: "佛山英语体验客户", source: "CRM线索", assignedAt: "2026-07-07", retainedAt: "2026-07-07", firstTouchAt: "", communication: "小红书私信转入，未完成电话沟通。", tagStatus: "待沟通", nextPlan: "微信确认线下体验时间", status: "open", crmSyncStatus: "local", crmRecordId: "", crmSyncError: "CRM示例线索未关联客户，暂不能写客户过程记录", leadObjectSyncStatus: "synced", leadObjectSyncError: "" },
+    { id: "crm-lead-demo-3", leadObjectRecordId: "demo-lead-3", owner: "夏俊莉", customer: "Sherry 老师", source: "CRM线索", assignedAt: "2026-07-05", retainedAt: "2026-07-05", firstTouchAt: "2026-07-08", communication: "已初步沟通硬件需求，预算未确认。", tagStatus: "已触达", nextPlan: "补充预算和设备规格", status: "open", crmSyncStatus: "local", crmRecordId: "", crmSyncError: "CRM示例线索未关联客户，暂不能写客户过程记录", leadObjectSyncStatus: "synced", leadObjectSyncError: "" }
   ],
   visitRecords: [
     { id: "v1", date: "2026-07-08", owner: "梁霄淇", customer: "瀚林", method: "线上", purpose: "增购沟通", points: "合同已签署，开票待付款，预计本周回款", pain: "需要尽快完成设备增购和安装对接", nextPlan: "跟进付款并确认安装排期", deadline: "2026-07-09", score: 4 },
@@ -659,6 +660,48 @@ function weeklyPendingLeads(owner) {
     });
 }
 
+function mergeCrmLeadRecords(leads = []) {
+  let added = 0;
+  let updated = 0;
+  leads.forEach((lead) => {
+    const existing = state.leadRecords.find((item) =>
+      (lead.leadObjectRecordId && item.leadObjectRecordId === lead.leadObjectRecordId) ||
+      (lead.id && item.id === lead.id)
+    );
+    if (existing) {
+      const nextAccountId = lead.accountId || existing.accountId || "";
+      Object.assign(existing, {
+        ...lead,
+        id: existing.id,
+        accountId: nextAccountId,
+        communication: existing.communication || lead.communication || "",
+        nextPlan: existing.nextPlan || lead.nextPlan || "",
+        firstTouchAt: existing.firstTouchAt || lead.firstTouchAt || "",
+        tagStatus: existing.tagStatus || lead.tagStatus || "待沟通",
+        status: existing.status || lead.status || "open",
+        crmSyncStatus: existing.crmSyncStatus === "pending" ? "pending" : lead.crmSyncStatus,
+        crmRecordId: existing.crmRecordId || lead.crmRecordId || "",
+        crmSyncError: nextAccountId ? "" : existing.crmSyncError || lead.crmSyncError || "",
+        leadObjectSyncStatus: "synced",
+        leadObjectSyncError: ""
+      });
+      updated += 1;
+    } else {
+      state.leadRecords.push({
+        ...lead,
+        id: lead.id || uid("crmld"),
+        owner: lead.owner || currentCrmOwnerName() || "",
+        status: lead.status || "open",
+        tagStatus: lead.tagStatus || "待沟通",
+        leadObjectSyncStatus: "synced",
+        leadObjectSyncError: ""
+      });
+      added += 1;
+    }
+  });
+  return { added, updated };
+}
+
 function reportMoveCount(report) {
   return (report.opportunityUpdates || []).filter((item) => item.todayProgress || item.nextPlan).length + lineCount(report.opportunityText);
 }
@@ -1073,7 +1116,7 @@ function renderDailyLeads() {
         `
     )
     .join("");
-  tbody.innerHTML = leadRows + Array.from({ length: 3 }, (_, index) => dailyLeadDraftRow(index)).join("");
+  tbody.innerHTML = leadRows || `<tr><td class="empty-row" colspan="9">暂无CRM分配线索，请先同步CRM线索或确认线索对象配置</td></tr>`;
 }
 
 function dailyLeadCell(label, field, type, value, accountId = "") {
@@ -1087,34 +1130,6 @@ function dailyLeadCell(label, field, type, value, accountId = "") {
 function formatLeadStatus(value) {
   const labels = { open: "编辑/保存/提交", submitted: "已提交", converted: "已转商机", invalid: "无效", closed: "已关闭" };
   return labels[value] || value || "编辑/保存/提交";
-}
-
-function dailyLeadDraftRow(index) {
-  return `
-    <tr class="draft-row" data-daily-lead-draft-row="${index}">
-      ${dailyLeadCell("潜在客户", "customer", "account", "")}
-      ${dailyLeadCell("自动", "assignedAt", "date", TODAY)}
-      <td>自动</td>
-      ${dailyLeadCell("填写首次触达", "firstTouchAt", "date", "")}
-      ${dailyLeadCell("填写沟通情况", "communication", "textarea", "")}
-      ${dailyLeadCell("待沟通", "tagStatus", "select", "待沟通")}
-      ${dailyLeadCell("填写下一步计划", "nextPlan", "textarea", "")}
-      ${dailyLeadCell("编辑/保存/提交", "status", "select", "open")}
-      <td>${crmStatusLabel("local", "新增后进入本系统线索池")}</td>
-    </tr>
-  `;
-}
-
-function ensureDailyLeadDraftRows() {
-  const rows = Array.from(document.querySelectorAll("#dailyLeadTable tr[data-daily-lead-draft-row]"));
-  const last = rows[rows.length - 1];
-  if (!last || !isDailyLeadDraftRowFilled(last)) return;
-  last.insertAdjacentHTML("afterend", dailyLeadDraftRow(rows.length));
-}
-
-function isDailyLeadDraftRowFilled(row) {
-  const value = (field) => row.querySelector(`[data-daily-lead-field="${field}"]`)?.dataset.value?.trim() || "";
-  return Boolean(value("customer") || value("firstTouchAt") || value("communication") || value("nextPlan"));
 }
 
 function renderDailyVisits(count = 3) {
@@ -2295,63 +2310,10 @@ document.querySelector("#dailyForm").addEventListener("submit", (event) => {
         ),
         crmSyncStatus: accountId ? "pending" : "local",
         crmRecordId: "",
-        crmSyncError: accountId ? "" : "未匹配CRM客户，可先本地保存"
+        crmSyncError: accountId ? "" : "未关联CRM客户，仅更新线索对象，暂不写客户活动记录"
       };
     })
     .filter((item) => item.changed);
-  const draftLeadRows = Array.from(document.querySelectorAll("#dailyLeadTable tr[data-daily-lead-draft-row]"))
-    .filter(isDailyLeadDraftRowFilled);
-  const invalidDraftLead = draftLeadRows.find((row) => {
-    const get = (field) => row.querySelector(`[data-daily-lead-field="${field}"]`)?.dataset.value?.trim() || "";
-    return !get("customer") || !get("communication") || !get("nextPlan");
-  });
-  if (invalidDraftLead) {
-    alert("新增线索请至少填写：潜在客户、沟通情况描述、下一步计划。");
-    return;
-  }
-  const newLeadUpdates = draftLeadRows.map((row) => {
-    const get = (field) => row.querySelector(`[data-daily-lead-field="${field}"]`)?.dataset.value?.trim() || "";
-    const accountId = row.querySelector(`[data-daily-lead-field="customer"]`)?.dataset.accountId || "";
-    const communication = get("communication");
-    const firstTouchAt = get("firstTouchAt") || (communication ? report.date : "");
-    const leadRecord = {
-      id: uid("ld"),
-      owner: report.owner,
-      accountId,
-      customer: get("customer"),
-      assignedAt: get("assignedAt") || report.date,
-      retainedAt: get("assignedAt") || report.date,
-      firstTouchAt,
-      communication,
-      tagStatus: get("tagStatus") || (firstTouchAt ? "已触达" : "待沟通"),
-      nextPlan: get("nextPlan"),
-      status: get("status") === "open" ? "submitted" : get("status") || "submitted",
-      updatedAt: report.date,
-      crmSyncStatus: accountId ? "pending" : "local",
-      crmRecordId: "",
-      crmSyncError: accountId ? "" : "未匹配CRM客户，可先本地保存",
-      leadObjectSyncStatus: "pending",
-      leadObjectRecordId: "",
-      leadObjectSyncError: ""
-    };
-    state.leadRecords.push(leadRecord);
-    return {
-      leadId: leadRecord.id,
-      accountId: leadRecord.accountId,
-      customer: leadRecord.customer,
-      assignedAt: leadRecord.assignedAt,
-      firstTouchAt: leadRecord.firstTouchAt,
-      communication: leadRecord.communication,
-      tagStatus: leadRecord.tagStatus,
-      nextPlan: leadRecord.nextPlan,
-      status: leadRecord.status,
-      changed: true,
-      crmSyncStatus: leadRecord.crmSyncStatus,
-      crmRecordId: "",
-      crmSyncError: leadRecord.crmSyncError
-    };
-  });
-  report.leadUpdates.push(...newLeadUpdates);
   const previousReport = state.reports.find((item) => item.date === report.date && item.owner === report.owner);
   report.id = previousReport?.id || uid("r");
   if (previousReport) {
@@ -2402,7 +2364,7 @@ document.querySelector("#dailyForm").addEventListener("submit", (event) => {
       target.status = update.status === "open" && (update.communication || update.nextPlan || update.firstTouchAt) ? "submitted" : update.status || target.status;
       target.updatedAt = report.date;
       target.crmSyncStatus = target.accountId ? "pending" : "local";
-      target.crmSyncError = target.accountId ? "" : "未匹配CRM客户，可先本地保存";
+      target.crmSyncError = target.accountId ? "" : "未关联CRM客户，仅更新线索对象，暂不写客户活动记录";
       target.leadObjectSyncStatus = "pending";
       target.leadObjectSyncError = "";
     }
@@ -2736,11 +2698,6 @@ function beginDailyVisitCellEdit(cell) {
 function beginDailyLeadCellEdit(cell) {
   if (!cell || cell.querySelector(".sheet-editor")) return;
   const row = cell.closest("tr[data-lead-id]");
-  const draftRow = cell.closest("tr[data-daily-lead-draft-row]");
-  if (draftRow) {
-    beginDailyLeadDraftCellEdit(cell);
-    return;
-  }
   const lead = state.leadRecords.find((item) => item.id === row?.dataset.leadId);
   if (!lead) return;
   const field = cell.dataset.dailyLeadField;
@@ -2753,7 +2710,7 @@ function beginDailyLeadCellEdit(cell) {
       lead.accountId = account.accountId || "";
       lead.updatedAt = TODAY;
       lead.crmSyncStatus = lead.accountId ? "pending" : "local";
-      lead.crmSyncError = lead.accountId ? "" : "未匹配CRM客户，可先本地保存";
+      lead.crmSyncError = lead.accountId ? "" : "未关联CRM客户，仅更新线索对象，暂不写客户活动记录";
       lead.leadObjectSyncStatus = "pending";
       lead.leadObjectSyncError = "";
       saveState();
@@ -2765,26 +2722,6 @@ function beginDailyLeadCellEdit(cell) {
   const editor = createDailyLeadEditor(field, type, value);
   attachInlineEditor(cell, editor, type, (nextValue) => {
     updateDailyLeadFromCell(cell, nextValue);
-  });
-}
-
-function beginDailyLeadDraftCellEdit(cell) {
-  const field = cell.dataset.dailyLeadField;
-  const type = cell.dataset.editorType;
-  const value = cell.dataset.value || "";
-  if (field === "customer") {
-    beginAccountCellEdit(cell, value, (account) => {
-      rememberCrmAccounts([account]);
-      cell.dataset.accountId = account.accountId || "";
-      updateInlineCell(cell, account.accountName || value, account.accountName || "潜在客户");
-      ensureDailyLeadDraftRows();
-    });
-    return;
-  }
-  const editor = createDailyLeadEditor(field, type, value);
-  attachInlineEditor(cell, editor, type, (nextValue) => {
-    updateInlineCell(cell, nextValue, formatDailyLeadCellLabel(field, nextValue));
-    ensureDailyLeadDraftRows();
   });
 }
 
@@ -2811,7 +2748,7 @@ function updateDailyLeadFromCell(cell, value) {
   if (field === "tagStatus" && ["已转商机", "无效"].includes(value)) lead.status = value === "已转商机" ? "converted" : "invalid";
   lead.updatedAt = TODAY;
   lead.crmSyncStatus = lead.accountId ? "pending" : "local";
-  lead.crmSyncError = lead.accountId ? "" : "未匹配CRM客户，可先本地保存";
+  lead.crmSyncError = lead.accountId ? "" : "未关联CRM客户，仅更新线索对象，暂不写客户活动记录";
   lead.leadObjectSyncStatus = "pending";
   lead.leadObjectSyncError = "";
   saveState();
@@ -3251,15 +3188,31 @@ document.querySelector("#addOpportunityButton").addEventListener("click", () => 
   document.querySelector("#opportunityDialog").showModal();
 });
 
-document.querySelector("#addLeadButton")?.addEventListener("click", () => {
-  const form = document.querySelector("#leadForm");
-  if (form) {
-    form.reset();
-    const owner = document.querySelector('#dailyForm select[name="owner"]')?.value || currentCrmOwnerName() || visibleOwners()[0] || "";
-    form.querySelector('select[name="owner"]').value = owner;
-    form.querySelector('input[name="assignedAt"]').value = TODAY;
+document.querySelector("#syncCrmLeadsButton")?.addEventListener("click", async () => {
+  const button = document.querySelector("#syncCrmLeadsButton");
+  const owner = document.querySelector('#dailyForm select[name="owner"]')?.value || currentCrmOwnerName() || visibleOwners()[0] || "";
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "同步中...";
+  try {
+    const response = await fetch(`${CRM_LEAD_RECORDS_API}?owner=${encodeURIComponent(owner)}`, { method: "POST" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "CRM线索同步失败");
+    const result = mergeCrmLeadRecords(payload.leads || []);
+    addSyncEvent({
+      owner,
+      status: "crm-leads-pulled",
+      title: "CRM线索已同步",
+      detail: `${owner} 从 CRM 拉取线索 ${payload.leads?.length || 0} 条，新增 ${result.added} 条，更新 ${result.updated} 条`
+    });
+    saveState();
+    render();
+  } catch (error) {
+    alert(`CRM线索同步失败：${error.message || "请检查线索对象和字段配置"}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
   }
-  document.querySelector("#leadDialog").showModal();
 });
 
 document.querySelector("#addOnlineButton").addEventListener("click", () => {
@@ -3330,45 +3283,6 @@ document.querySelector("#opportunityForm").addEventListener("submit", (event) =>
   saveState();
   event.currentTarget.reset();
   document.querySelector("#opportunityDialog").close();
-  render();
-});
-
-document.querySelector("#leadForm")?.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const lead = Object.fromEntries(form.entries());
-  if (!lead.owner || !lead.customer?.trim() || !lead.communication?.trim() || !lead.nextPlan?.trim()) {
-    alert("请填写顾问、潜在客户、沟通情况描述和下一步计划。");
-    return;
-  }
-  state.leadRecords.push({
-    id: uid("ld"),
-    owner: lead.owner,
-    accountId: "",
-    customer: lead.customer.trim(),
-    assignedAt: lead.assignedAt || TODAY,
-    retainedAt: lead.assignedAt || TODAY,
-    firstTouchAt: TODAY,
-    communication: lead.communication || "",
-    tagStatus: "已触达",
-    nextPlan: lead.nextPlan || "",
-    status: "open",
-    updatedAt: TODAY,
-    crmSyncStatus: "local",
-    crmRecordId: "",
-    crmSyncError: "本地创建潜客，待确认CRM线索对象字段后同步",
-    leadObjectSyncStatus: "pending",
-    leadObjectRecordId: "",
-    leadObjectSyncError: ""
-  });
-  addSyncEvent({
-    owner: lead.owner,
-    status: "lead-created",
-    title: "潜客已创建",
-    detail: `${lead.owner} 创建潜客：${lead.customer.trim()}`
-  });
-  saveState();
-  document.querySelector("#leadDialog").close();
   render();
 });
 

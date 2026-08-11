@@ -1008,6 +1008,77 @@ function buildMappedCrmObjectData(config, record, ownerId) {
   return data;
 }
 
+function uniqueFields(fields) {
+  return Array.from(new Set(fields.filter(Boolean)));
+}
+
+function requiredMappedField(config, localKey, label) {
+  const field = config.fieldMap?.[localKey];
+  if (!field) throw new Error(`${config.kind} CRM field map missing ${label || localKey}`);
+  return field;
+}
+
+function mapCrmLeadRecord(record, config, ownerName, ownerId) {
+  const field = (localKey) => config.fieldMap?.[localKey];
+  const value = (localKey) => {
+    const crmKey = field(localKey);
+    return crmKey ? record[crmKey] : "";
+  };
+  return {
+    id: `crm-lead-${record.id || value("id")}`,
+    leadObjectRecordId: String(record.id || value("id") || ""),
+    owner: ownerName,
+    ownerId: String(value("ownerId") || ownerId || ""),
+    accountId: String(value("accountId") || ""),
+    customer: value("customer") || value("name") || "",
+    source: value("source") || "CRM线索",
+    assignedAt: String(value("assignedAt") || value("createdAt") || "").slice(0, 10),
+    retainedAt: String(value("assignedAt") || value("createdAt") || "").slice(0, 10),
+    firstTouchAt: String(value("firstTouchAt") || "").slice(0, 10),
+    communication: value("progress") || "",
+    tagStatus: value("stage") || "待沟通",
+    nextPlan: value("nextPlan") || "",
+    status: value("status") || "open",
+    updatedAt: String(value("updatedAt") || value("assignedAt") || "").slice(0, 10),
+    crmSyncStatus: value("accountId") ? "pending" : "local",
+    crmRecordId: "",
+    crmSyncError: value("accountId") ? "" : "CRM线索未关联客户，暂不能写客户过程记录",
+    leadObjectSyncStatus: "synced",
+    leadObjectSyncError: ""
+  };
+}
+
+async function queryAssignedLeads(session, ownerName, ownerId, { force = false } = {}) {
+  const config = crmObjectConfig("lead");
+  if (!config.objectApiKey) throw new Error("CRM lead object is not configured");
+  const ownerField = requiredMappedField(config, "ownerId", "ownerId");
+  const customerField = requiredMappedField(config, "customer", "customer");
+  const fields = uniqueFields(["id", customerField, ...Object.values(config.fieldMap || {})]);
+  const where = process.env.XIAOSHOUYI_LEAD_QUERY_WHERE
+    ? `AND (${process.env.XIAOSHOUYI_LEAD_QUERY_WHERE})`
+    : "";
+  const orderField = config.fieldMap.updatedAt || config.fieldMap.assignedAt || "";
+  const file = cacheFile("crm-leads", `${session.user?.id}-${ownerId || ownerName}`);
+  if (!force) {
+    const cached = await readJson(file, null);
+    if (cached?.syncedAt && Date.now() - new Date(cached.syncedAt).getTime() < CRM_CACHE_TTL_MS) return cached;
+  }
+  const result = await crmQuery(
+    session,
+    [
+      `SELECT ${fields.join(",")} FROM ${config.objectApiKey}`,
+      `WHERE ${ownerField} = ${soqlValue(ownerId)}`,
+      where,
+      orderField ? `ORDER BY ${orderField} DESC` : "",
+      "LIMIT 200"
+    ].filter(Boolean).join(" ")
+  );
+  const records = crmRecords(result).map((record) => mapCrmLeadRecord(record, config, ownerName, ownerId));
+  const payload = { ownerId: String(ownerId), ownerName, syncedAt: new Date().toISOString(), leads: records };
+  await writeJson(file, payload);
+  return payload;
+}
+
 async function syncConfiguredCrmObject(session, kind, record, dryRun = false) {
   if (!isManager(session) && record.owner && record.owner !== session.user.name) {
     throw new Error("不能同步其他顾问的数据");
@@ -1183,6 +1254,20 @@ async function handleConfiguredObjectSync(req, res, kind) {
   });
 }
 
+async function handleLeadRecords(req, res, url) {
+  const session = await requireSession(req, res);
+  if (!session) return;
+  try {
+    const owner = url.searchParams.get("owner") || session.user.name;
+    if (!isManager(session) && owner !== session.user.name) return json(res, { error: "Cannot query another owner" }, 403);
+    const ownerId = await resolveOwnerId(session, owner);
+    const payload = await queryAssignedLeads(session, owner, ownerId, { force: req.method === "POST" || url.searchParams.get("force") === "1" });
+    return json(res, payload);
+  } catch (error) {
+    return json(res, { error: error.message || "CRM lead query failed", detail: compactError(error) }, 500);
+  }
+}
+
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -1238,6 +1323,7 @@ async function router(req, res) {
     if (url.pathname === "/api/crm/actions" && req.method === "POST") return handleActions(req, res);
     if (url.pathname === "/api/crm/opportunities") return handleConfiguredObjectSync(req, res, "opportunity");
     if (url.pathname === "/api/crm/leads") return handleConfiguredObjectSync(req, res, "lead");
+    if (url.pathname === "/api/crm/lead-records") return handleLeadRecords(req, res, url);
     return serveStatic(req, res, url);
   } catch (error) {
     json(res, { error: error.message || "Server error" }, 500);

@@ -48,7 +48,8 @@ sudo RELEASE_REF=<branch-or-commit> /opt/salesdaywork/deploy.sh
 - 拜访同步：`/api/crm/visits` 将已匹配 CRM 客户的拜访记录创建为 CRM `activityrecord`，并自动补充 `ownerId`、`dimDepart`、`entityType` 等字段。
 - 商机与日报动作同步：`/api/crm/actions` 采用手动同步和失败重试机制，先将商机推进、日报客户动作写入 CRM `activityrecord` 作为过程留痕。
 - 商机主表同步：`/api/crm/opportunities` 已预留可配置写回能力，通过 `XIAOSHOUYI_OPPORTUNITY_OBJECT` 和 `XIAOSHOUYI_OPPORTUNITY_FIELD_MAP` 指定销售易对象 API 名与字段映射后，可创建或更新 CRM 商机对象。
-- 线索对象同步：`/api/crm/leads` 已预留可配置写回能力，通过 `XIAOSHOUYI_LEAD_OBJECT` 和 `XIAOSHOUYI_LEAD_FIELD_MAP` 指定销售易线索对象 API 名与字段映射后，可创建或更新 CRM 线索/潜客对象。
+- CRM 线索承接：`/api/crm/lead-records` 按提交人从销售易线索对象拉取已分配线索并缓存在本系统，日报页只填写当天承接、沟通情况和下一步计划。
+- 线索对象同步：`/api/crm/leads` 已预留可配置写回能力，通过 `XIAOSHOUYI_LEAD_OBJECT` 和 `XIAOSHOUYI_LEAD_FIELD_MAP` 指定销售易线索对象 API 名与字段映射后，可把承接结果更新回 CRM 线索对象。
 
 常用环境变量：
 
@@ -62,7 +63,8 @@ XIAOSHOUYI_OPPORTUNITY_OBJECT=Opportunity__c
 XIAOSHOUYI_OPPORTUNITY_FIELD_MAP={"customer":"name","accountId":"accountId","ownerId":"ownerId","amount":"amount","stage":"stage","progress":"description","nextActionDate":"nextActionDate"}
 XIAOSHOUYI_OPPORTUNITY_DEFAULTS={}
 XIAOSHOUYI_LEAD_OBJECT=Lead__c
-XIAOSHOUYI_LEAD_FIELD_MAP={"customer":"name","ownerId":"ownerId","source":"source","stage":"status","progress":"description","nextPlan":"nextPlan","firstTouchAt":"firstTouchAt"}
+XIAOSHOUYI_LEAD_FIELD_MAP={"customer":"name","ownerId":"ownerId","accountId":"accountId","source":"source","stage":"status","progress":"description","nextPlan":"nextPlan","assignedAt":"createdAt","firstTouchAt":"firstTouchAt","updatedAt":"updatedAt"}
+XIAOSHOUYI_LEAD_QUERY_WHERE=status != 'closed'
 XIAOSHOUYI_LEAD_DEFAULTS={}
 ```
 

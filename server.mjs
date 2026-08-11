@@ -234,6 +234,28 @@ async function crmCreateRecord(session, objectApiKey, data) {
   return payload;
 }
 
+async function crmUpdateRecord(session, objectApiKey, recordId, data) {
+  const response = await fetch(`${session.baseUrl || `https://${authConfig().crmHost}`}/rest/data/v2.0/xobjects/${objectApiKey}/${recordId}`, {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${session.accessToken}`,
+      "content-type": "application/json",
+      accept: "application/json"
+    },
+    body: JSON.stringify({ data })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || (payload?.code && payload.code !== 200)) {
+    const message = payload?.msg || payload?.message || payload?.error_description || "CRM update failed";
+    const error = new Error(message);
+    error.status = response.status;
+    error.payload = payload;
+    error.requestData = data;
+    throw error;
+  }
+  return payload;
+}
+
 function crmRecords(payload) {
   return payload?.result?.records || payload?.data?.records || payload?.records || [];
 }
@@ -921,6 +943,102 @@ function dryRunCrmAction(session, defaults, action) {
   return { localId: action.localId || action.id, status: "dry-run", requestData: buildActionData(session, defaults, action) };
 }
 
+function parseJsonEnv(name, fallback = {}) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(`${name} must be valid JSON`);
+  }
+}
+
+function crmObjectConfig(kind) {
+  if (kind === "opportunity") {
+    return {
+      kind,
+      objectApiKey: process.env.XIAOSHOUYI_OPPORTUNITY_OBJECT || "",
+      fieldMap: parseJsonEnv("XIAOSHOUYI_OPPORTUNITY_FIELD_MAP", {}),
+      defaults: parseJsonEnv("XIAOSHOUYI_OPPORTUNITY_DEFAULTS", {})
+    };
+  }
+  return {
+    kind,
+    objectApiKey: process.env.XIAOSHOUYI_LEAD_OBJECT || "",
+    fieldMap: parseJsonEnv("XIAOSHOUYI_LEAD_FIELD_MAP", {}),
+    defaults: parseJsonEnv("XIAOSHOUYI_LEAD_DEFAULTS", {})
+  };
+}
+
+function localCrmObjectSource(record, ownerId) {
+  return {
+    id: record.id || record.localId || "",
+    owner: record.owner || "",
+    ownerId,
+    customer: record.customer || "",
+    accountId: record.accountId || "",
+    source: record.source || "",
+    need: record.need || "",
+    amount: number(record.amount),
+    stage: record.stage || record.tagStatus || "",
+    grade: record.grade || "",
+    score: number(record.score),
+    progress: record.progress || record.communication || "",
+    nextPlan: record.nextPlan || "",
+    nextActionDate: record.nextActionDate || "",
+    estimatedCloseDate: record.estimatedCloseDate || "",
+    status: record.status || "",
+    assignedAt: record.assignedAt || "",
+    firstTouchAt: record.firstTouchAt || "",
+    updatedAt: record.updatedAt || record.date || ""
+  };
+}
+
+function buildMappedCrmObjectData(config, record, ownerId) {
+  if (!config.objectApiKey) throw new Error(`${config.kind} CRM object is not configured`);
+  const entries = Object.entries(config.fieldMap || {});
+  if (!entries.length) throw new Error(`${config.kind} CRM field map is not configured`);
+  const source = localCrmObjectSource(record, ownerId);
+  const data = { ...(config.defaults || {}) };
+  entries.forEach(([localKey, crmKey]) => {
+    if (!crmKey) return;
+    const value = source[localKey];
+    if (value !== undefined && value !== "") data[crmKey] = value;
+  });
+  return data;
+}
+
+async function syncConfiguredCrmObject(session, kind, record, dryRun = false) {
+  if (!isManager(session) && record.owner && record.owner !== session.user.name) {
+    throw new Error("不能同步其他顾问的数据");
+  }
+  const config = crmObjectConfig(kind);
+  const ownerId = await resolveOwnerId(session, record.owner);
+  const data = buildMappedCrmObjectData(config, record, ownerId);
+  const recordId = record.crmMasterRecordId || record.leadObjectRecordId || "";
+  if (dryRun) {
+    return {
+      localId: record.id || record.localId,
+      status: "dry-run",
+      objectApiKey: config.objectApiKey,
+      operation: recordId ? "update" : "create",
+      crmRecordId: recordId,
+      requestData: data
+    };
+  }
+  const payload = recordId
+    ? await crmUpdateRecord(session, config.objectApiKey, recordId, data)
+    : await crmCreateRecord(session, config.objectApiKey, data);
+  return {
+    localId: record.id || record.localId,
+    status: "synced",
+    objectApiKey: config.objectApiKey,
+    operation: recordId ? "update" : "create",
+    crmRecordId: recordId || extractCreatedId(payload),
+    payload
+  };
+}
+
 async function handleVisits(req, res) {
   const session = await requireSession(req, res);
   if (!session) return;
@@ -1018,6 +1136,53 @@ async function handleActions(req, res) {
   }
 }
 
+async function handleConfiguredObjectSync(req, res, kind) {
+  const session = await requireSession(req, res);
+  if (!session) return;
+  if (req.method === "GET") {
+    try {
+      const config = crmObjectConfig(kind);
+      return json(res, {
+        ok: true,
+        kind,
+        configured: Boolean(config.objectApiKey && Object.keys(config.fieldMap || {}).length),
+        objectApiKey: config.objectApiKey || "",
+        mappedFields: Object.keys(config.fieldMap || {}),
+        crmFields: Object.values(config.fieldMap || {}),
+        defaults: config.defaults
+      });
+    } catch (error) {
+      return json(res, { error: error.message || "CRM object config failed", detail: compactError(error) }, 500);
+    }
+  }
+  const body = await readBody(req);
+  const records = Array.isArray(body.records) ? body.records : [];
+  if (!records.length) return json(res, { error: `No ${kind} records to sync` }, 400);
+  const results = [];
+  for (const record of records) {
+    try {
+      results.push(await syncConfiguredCrmObject(session, kind, record, Boolean(body.dryRun)));
+    } catch (error) {
+      results.push({
+        localId: record.id || record.localId,
+        status: "failed",
+        error: error.message || `${kind} CRM sync failed`,
+        detail: compactError(error)
+      });
+    }
+  }
+  const successStatus = body.dryRun ? "dry-run" : "synced";
+  return json(res, {
+    syncedAt: new Date().toISOString(),
+    dryRun: Boolean(body.dryRun),
+    kind,
+    total: records.length,
+    success: results.filter((item) => item.status === successStatus).length,
+    failed: results.filter((item) => item.status === "failed").length,
+    results
+  });
+}
+
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -1071,6 +1236,8 @@ async function router(req, res) {
     if (url.pathname === "/api/crm/visits") return handleVisits(req, res);
     if (url.pathname === "/api/crm/team") return handleTeam(req, res);
     if (url.pathname === "/api/crm/actions" && req.method === "POST") return handleActions(req, res);
+    if (url.pathname === "/api/crm/opportunities") return handleConfiguredObjectSync(req, res, "opportunity");
+    if (url.pathname === "/api/crm/leads") return handleConfiguredObjectSync(req, res, "lead");
     return serveStatic(req, res, url);
   } catch (error) {
     json(res, { error: error.message || "Server error" }, 500);
